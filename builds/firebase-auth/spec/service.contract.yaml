@@ -1,0 +1,169 @@
+service_id: firebase-auth
+capabilities:
+- name: token_verification
+  type: auth_provider
+  provides:
+  - POST /verify
+  description: 'Verifies a single Firebase ID token (JWT signature, expiry, issuer,
+    audience) and returns uid, email, custom claims, and token metadata. Returns generic
+    401 for any verification failure; detailed reason logged server-side only.
+
+    '
+- name: batch_token_verification
+  type: auth_provider
+  provides:
+  - POST /batch-verify
+  description: 'Verifies up to 25 Firebase ID tokens in a single call. Returns per-token
+    results (valid with claims or invalid with reason). Logs batch summary (total,
+    valid count, invalid count).
+
+    '
+- name: user_lookup
+  type: api_client
+  provides:
+  - GET /user-lookup/:uid
+  description: 'Looks up a user profile by UID via Firebase Admin SDK. Returns email,
+    display name, provider data, custom claims, and disabled status. Returns 404 for
+    unknown UIDs.
+
+    '
+- name: health_check
+  type: middleware
+  provides:
+  - GET /health
+  description: 'Liveness/readiness health check endpoint. Used by Cloud Run, smoke
+    tests, and calling services to confirm the service is operational.
+
+    '
+- name: jwks_caching
+  type: middleware
+  provides:
+  - Firebase public key cache with auto-refresh
+  description: 'Caches Firebase JWKS public keys used for token verification and auto-refreshes
+    them on expiry. Reduces latency and external calls during token verification.
+
+    '
+host_requirements:
+- name: gcp_project
+  description: 'An active GCP project with billing enabled. The service deploys to Cloud
+    Run within this project.
+
+    '
+  required: true
+  how_to_satisfy: 'Create a GCP project and enable billing. Provide the project ID
+    via the deploy script.
+
+    '
+- name: gcp_apis
+  description: 'Required GCP APIs: Cloud Run, Cloud Build, Secret Manager, IAM, Artifact
+    Registry, Identity Toolkit (Firebase Auth / Identity Platform).
+
+    '
+  required: true
+  how_to_satisfy: 'The deploy script checks and can auto-enable missing APIs.
+    Operator needs roles/serviceusage.serviceUsageAdmin or equivalent.
+
+    '
+- name: firebase_project
+  description: 'A Firebase project linked to the GCP project with Authentication (Identity
+    Platform) enabled and at least one sign-in provider configured.
+
+    '
+  required: true
+  how_to_satisfy: 'Set up Firebase in the GCP project via Firebase Console. Enable
+    Authentication and configure desired providers (Google, Apple, email, etc.).
+
+    '
+- name: operator_iam_roles
+  description: 'The operator running the deploy must have: roles/run.admin, roles/cloudbuild.builds.editor,
+    roles/secretmanager.admin, roles/artifactregistry.admin, roles/iam.serviceAccountUser,
+    roles/resourcemanager.projectIamAdmin (corrected per ADR-013).
+
+    '
+  required: true
+  how_to_satisfy: 'Grant these roles to the operator''s Google account or use a privileged
+    service account for CI/CD automation.
+
+    '
+- name: service_account_credential
+  description: 'A Firebase Admin SDK service account JSON key with permissions to
+    verify tokens and look up users.
+
+    '
+  required: true
+  how_to_satisfy: 'Generate a service account key in Firebase Console > Project Settings
+    > Service Accounts. Set as FIREBASE_SERVICE_ACCOUNT_JSON environment variable.
+
+    '
+integration_points:
+- type: route
+  path: POST /verify
+  description: 'Accepts a Firebase ID token in the request body, verifies it fully
+    (signature, expiry, issuer, audience), and returns uid, email, custom claims,
+    and token metadata. Returns 401 for invalid tokens, 400 for malformed requests.
+
+    '
+- type: route
+  path: POST /batch-verify
+  description: 'Accepts an array of up to 25 Firebase ID tokens, verifies each, and
+    returns per-token results. Each result is either valid (with claims) or invalid
+    (with generic reason).
+
+    '
+- type: route
+  path: GET /user-lookup/:uid
+  description: 'Looks up a Firebase user profile by UID. Returns user metadata including
+    email, display name, provider data, custom claims, and disabled status. Returns
+    404 for unknown UIDs.
+
+    '
+- type: route
+  path: GET /health
+  description: 'Health check endpoint for Cloud Run probes and service discovery.
+    Returns service status and Firebase SDK initialisation state.
+
+    '
+- type: hook
+  event: startup
+  description: 'On startup, initialises Firebase Admin SDK using the service account
+    credential from Secret Manager. Logs initialisation status. Fails fast if credential
+    is missing or invalid.
+
+    '
+- type: middleware
+  path: '*'
+  description: 'Request correlation ID middleware on all endpoints. Structured JSON
+    logging with secret redaction (emails/UIDs partially redacted).
+
+    '
+env_requirements:
+- name: FIREBASE_SERVICE_ACCOUNT_JSON
+  description: 'Firebase Admin SDK service account JSON credential. Used exclusively
+    in the Firebase SDK initialisation module for token verification and user lookups.
+    Must never be passed to route handlers or logged.
+
+    '
+  required: true
+  sensitive: true
+  default: null
+- name: GCP_PROJECT_ID
+  description: 'GCP project ID where the service is deployed. Used for Cloud Run deployment,
+    Secret Manager access, and IAM binding.
+
+    '
+  required: true
+  sensitive: false
+  default: null
+- name: GCP_REGION
+  description: 'GCP region for Cloud Run deployment (e.g. us-central1).
+
+    '
+  required: true
+  sensitive: false
+  default: null
+compatibility:
+  stacks:
+  - node
+  min_versions:
+    node: '20'
+  max_versions: {}

@@ -1,0 +1,417 @@
+requirements:
+- id: REQ-001
+  title: Single token verification endpoint
+  description: 'POST endpoint that accepts a single Firebase ID token, verifies it
+    using the Firebase Admin SDK (signature, expiry, issuer, audience), and returns
+    uid, email, custom claims, and token metadata.
+
+    '
+  acceptance_criteria:
+  - Accepts POST request with Firebase ID token in request body
+  - Verifies JWT signature, expiry, issuer, and audience via Firebase Admin SDK verifyIdToken()
+  - Returns uid, email, custom claims, and token metadata on success (200)
+  - Returns generic 401 for any verification failure (expired, bad signature, wrong
+    audience)
+  - Does NOT distinguish between failure reasons in HTTP response
+  - Logs specific rejection reason server-side (expired, bad signature, malformed)
+  - Returns 400 for missing request body
+  - Validates JWT structure (3-part base64 format) before passing to Firebase SDK
+  risk: high
+  must_ask_human: true
+- id: REQ-002
+  title: Batch token verification endpoint
+  description: 'POST endpoint that accepts up to 25 Firebase ID tokens in a single
+    call and returns per-token verification results (valid/invalid with reason).
+
+    '
+  acceptance_criteria:
+  - Accepts POST request with array of up to 25 Firebase ID tokens
+  - 'Returns per-token results: each token marked valid or invalid with reason'
+  - Valid tokens include uid, email, custom claims, and token metadata
+  - Invalid tokens include rejection reason in response (for caller consumption)
+  - 'Logs batch summary: total count, valid count, invalid count'
+  - Returns 400 if more than 25 tokens submitted
+  - Returns 400 if request body is missing or malformed
+  - "Each token is independently verified \u2014 one failure does not fail the batch"
+  risk: high
+  must_ask_human: true
+- id: REQ-003
+  title: User lookup endpoint
+  description: 'GET/POST endpoint that looks up a user profile by UID via Firebase
+    Admin SDK, returning email, display name, provider data, custom claims, and disabled
+    status.
+
+    '
+  acceptance_criteria:
+  - Accepts a UID parameter and returns user profile from Firebase Admin SDK
+  - 'Response includes: email, display name, provider data, custom claims, disabled
+    status'
+  - Returns 404 for unknown UID
+  - Returns 400 for missing or malformed UID
+  - Logs user lookup requests with partially redacted UID
+  - UIDs are validated at input boundary before calling Firebase SDK
+  risk: medium
+  must_ask_human: false
+- id: REQ-004
+  title: Health check endpoint
+  description: 'GET endpoint that returns service health status, used for Cloud Run
+    liveness/readiness probes and smoke tests.
+
+    '
+  acceptance_criteria:
+  - Returns 200 with health status on GET request
+  - Does not require authentication
+  - Reports Firebase SDK initialisation status
+  - Suitable for Cloud Run health probe configuration
+  risk: low
+  must_ask_human: false
+- id: REQ-005
+  title: Full JWT verification on every request
+  description: 'Every token verification call must verify JWT signature, expiry, issuer,
+    and audience. Claims must never be trusted without verification.
+
+    '
+  acceptance_criteria:
+  - All verification calls use Firebase Admin SDK verifyIdToken() with full validation
+  - No code path trusts token claims without SDK verification
+  - Expired tokens are rejected
+  - Tokens with invalid signatures are rejected
+  - Tokens with wrong issuer or audience are rejected
+  risk: high
+  must_ask_human: true
+- id: REQ-006
+  title: "Secret isolation \u2014 Firebase credential containment"
+  description: 'FIREBASE_SERVICE_ACCOUNT_JSON must only be accessed in the Firebase
+    SDK initialisation module. It must never be passed to route handlers.
+
+    '
+  acceptance_criteria:
+  - Firebase credential is loaded and used only in a dedicated SDK initialisation
+    module
+  - Route handlers never receive or access the raw service account JSON
+  - No route handler imports the credential module directly
+  - Secret is sourced from GCP Secret Manager at runtime
+  risk: high
+  must_ask_human: true
+- id: REQ-007
+  title: "Log redaction \u2014 no secrets or full PII in logs"
+  description: 'All log output must pass through a redactor. User emails and UIDs
+    must be partially redacted in logs. Secrets must never appear in logs.
+
+    '
+  acceptance_criteria:
+  - A log redactor is applied to all structured log output
+  - User emails are partially redacted in logs (e.g., l***@example.com)
+  - User UIDs are partially redacted in logs
+  - FIREBASE_SERVICE_ACCOUNT_JSON never appears in log output
+  - Token values never appear in log output
+  - Redaction applies to all log levels (info, warn, error, debug)
+  risk: high
+  must_ask_human: true
+- id: REQ-008
+  title: Generic error responses for token verification
+  description: 'Token verification errors must return generic 401. The HTTP response
+    must not distinguish between expired, bad signature, wrong audience, etc.
+
+    '
+  acceptance_criteria:
+  - All token verification failures return HTTP 401 with a generic message
+  - Response body does not reveal whether token was expired, forged, or malformed
+  - Detailed rejection reason is logged server-side only
+  risk: high
+  must_ask_human: false
+- id: REQ-009
+  title: Input validation at system boundaries
+  description: 'All inbound data must be validated. Token format (JWT structure) must
+    be validated before passing to Firebase SDK.
+
+    '
+  acceptance_criteria:
+  - Token strings are validated for JWT structure (header.payload.signature) before
+    SDK call
+  - Request bodies are validated against expected schema
+  - Batch verify rejects payloads exceeding 25 tokens
+  - User lookup validates UID format
+  - Malformed inputs return 400 with generic error message
+  risk: high
+  must_ask_human: false
+- id: REQ-010
+  title: Internal-only ingress default
+  description: 'Cloud Run service must default to internal-only ingress. Service is
+    called by other microservices, not end users.
+
+    '
+  acceptance_criteria:
+  - Cloud Run deployment sets ingress to internal-only by default
+  - Cloud Run IAM policy sets allow_unauthenticated=false
+  - Only authenticated service-to-service calls can reach the endpoints
+  risk: high
+  must_ask_human: true
+- id: REQ-011
+  title: Constant-time security operations
+  description: 'Security-relevant operations must use constant-time comparisons where
+    applicable to prevent timing attacks.
+
+    '
+  acceptance_criteria:
+  - Token comparison and validation paths use constant-time operations where applicable
+  - No early-return patterns that leak information about token validity through timing
+  risk: high
+  must_ask_human: false
+- id: REQ-012
+  title: JWKS / Firebase public key caching with auto-refresh
+  description: 'Cache Firebase public keys (JWKS) used for token verification with
+    automatic refresh on expiry or rotation.
+
+    '
+  acceptance_criteria:
+  - Firebase public keys are cached in memory to avoid per-request fetches
+  - Cache respects Cache-Control / max-age headers from Google's JWKS endpoint
+  - Cache auto-refreshes before or upon expiry
+  - Handles key rotation gracefully (new keys fetched when verification fails with
+    cached keys)
+  - Logs cache refresh events
+  risk: medium
+  must_ask_human: false
+- id: REQ-013
+  title: Structured JSON logging
+  description: 'All logs must be structured JSON, covering verification requests,
+    Firebase Admin API calls, user lookups, and SDK initialisation.
+
+    '
+  acceptance_criteria:
+  - All log output is structured JSON (compatible with Cloud Logging)
+  - 'Verification requests log: result (pass/fail), partially-redacted uid, latency'
+  - Firebase Admin API calls are logged
+  - User lookup requests are logged
+  - 'Batch verification logs summary: total, valid count, invalid count'
+  - Firebase SDK initialisation status is logged at startup
+  - 'Rejected tokens log reason server-side: expired, bad signature, malformed'
+  risk: low
+  must_ask_human: false
+- id: REQ-014
+  title: Request correlation ID
+  description: 'All endpoints must include a correlation ID for request tracing across
+    services.
+
+    '
+  acceptance_criteria:
+  - Every request is assigned or propagates a correlation ID
+  - Correlation ID appears in all log entries for that request
+  - Correlation ID is returned in the response headers
+  risk: low
+  must_ask_human: false
+- id: REQ-015
+  title: TypeScript compilation with zero errors
+  description: 'The service must compile cleanly with TypeScript targeting Node 20.
+
+    '
+  acceptance_criteria:
+  - TypeScript compiles with zero errors
+  - Strict mode enabled
+  - Target is Node 20 compatible
+  risk: low
+  must_ask_human: false
+- id: REQ-016
+  title: Test coverage >80%
+  description: 'All unit and integration tests must pass with greater than 80% code
+    coverage.
+
+    '
+  acceptance_criteria:
+  - All tests pass (vitest)
+  - Code coverage exceeds 80% across lines, branches, and functions
+  - Coverage report is generated as part of test run
+  risk: low
+  must_ask_human: false
+- id: REQ-017
+  title: Containerised build via Cloud Build
+  description: 'The service must be built as a container image via GCP Cloud Build
+    and stored in Artifact Registry.
+
+    '
+  acceptance_criteria:
+  - Dockerfile is provided for the service
+  - Cloud Build config (cloudbuild.yaml) is provided
+  - Container image is pushed to Artifact Registry
+  - Container runs on Node 20 runtime
+  - pnpm is used as the package manager in the build
+  risk: medium
+  must_ask_human: false
+- id: REQ-018
+  title: Integration snippet output
+  description: 'After successful deployment, the operator receives an integration
+    snippet showing how calling services should invoke the auth verification endpoints.
+
+    '
+  acceptance_criteria:
+  - Integration snippet is printed to stdout after successful deploy
+  - Snippet shows example HTTP calls to verify, batch-verify, and user-lookup endpoints
+  - Snippet includes the deployed Cloud Run URL
+  - Snippet shows required headers and authentication method for service-to-service
+    calls
+  risk: low
+  must_ask_human: false
+non_goals:
+- "Multi-cloud support \u2014 GCP only in v1"
+- "Database provisioning \u2014 no user DB; Firebase is the identity store"
+- UI / frontend auth screens
+- OAuth provider setup automation (Google/Apple/GitHub)
+- "Multi-tenant org model \u2014 single tenant per deployment"
+- Custom domains / SSL management
+- "Full RBAC/ABAC policy engine \u2014 token verification only"
+- "Custom token minting \u2014 deferred to v1.1"
+- Session management / server-side sessions
+- "Rate limiting \u2014 deferred to v1.1"
+assumptions:
+- id: ASSUMP-001
+  text: 'Firebase Authentication (Identity Platform) is already enabled on the target
+    GCP project, and at least one auth provider (e.g., email/password) is configured.
+    The service does not set up Firebase Auth providers.
+
+    '
+  related_requirement: null
+- id: ASSUMP-002
+  text: 'The operator has a valid Firebase service account JSON key available as an
+    environment variable.
+
+    '
+  related_requirement: null
+- id: ASSUMP-003
+  text: 'Calling microservices already know how to obtain Cloud Run service-to-service
+    IAM tokens (e.g., via metadata server or workload identity) to authenticate to
+    this internal service.
+
+    '
+  related_requirement: null
+- id: ASSUMP-004
+  text: 'The Firebase Admin SDK''s verifyIdToken() handles JWKS fetching and caching
+    internally. REQ-012 (JWKS caching) may be satisfied by the SDK''s built-in behaviour
+    rather than custom implementation.
+
+    '
+  related_requirement: null
+- id: ASSUMP-005
+  text: 'Artifact Registry repository already exists or will be created during
+    deployment. The PRD does not explicitly call out Artifact Registry repository
+    creation.
+
+    '
+  related_requirement: null
+- id: ASSUMP-006
+  text: '''Constant-time operations where security-relevant'' refers to token string
+    comparisons and potentially error-path timing normalisation, not the entire verification
+    flow.
+
+    '
+  related_requirement: null
+- id: ASSUMP-007
+  text: 'The existing codebase already has a working Fastify app scaffold with health,
+    verify, batch-verify, and user-lookup route plugins, and an adapter pattern for
+    Firebase Admin SDK mocking.
+
+    '
+  related_requirement: null
+open_questions:
+- id: Q-001
+  text: 'What are the exact API contracts (request/response JSON schemas) for verify,
+    batch-verify, and user-lookup endpoints? The PRD lists fields but does not specify
+    the full schema, HTTP methods, or URL paths.
+
+    '
+  is_blocker: true
+  related_requirement: REQ-001
+- id: Q-002
+  text: 'What does ''token metadata'' include in the verify response? Is this iat,
+    exp, auth_time, sign_in_provider, or something else?
+
+    '
+  is_blocker: true
+  related_requirement: REQ-001
+- id: Q-003
+  text: "Should batch-verify return the detailed rejection reason per token in the\
+    \ response (the PRD says 'invalid with reason'), while single verify returns only\
+    \ generic 401? This seems inconsistent \u2014 is it intentional?\n"
+  is_blocker: true
+  related_requirement: REQ-002
+- id: Q-004
+  text: 'Is user-lookup a GET (UID in path/query) or POST (UID in body)? Does it require
+    the caller to provide a valid Firebase ID token for authorization, or is Cloud
+    Run IAM sufficient?
+
+    '
+  is_blocker: false
+  related_requirement: REQ-003
+- id: Q-005
+  text: 'Does the Firebase Admin SDK handle JWKS caching internally, making REQ-012
+    a no-op? Or is a custom caching layer expected on top of the SDK?
+
+    '
+  is_blocker: false
+  related_requirement: REQ-012
+- id: Q-006
+  text: 'What Cloud Run configuration should be used? (memory, CPU, concurrency, min/max
+    instances, timeout, CPU allocation policy)
+
+    '
+  is_blocker: false
+  related_requirement: REQ-016
+- id: Q-007
+  text: "How should the correlation ID be implemented \u2014 generated server-side,\
+    \ or propagated from an incoming header (e.g., X-Request-ID, X-Correlation-ID)?\n"
+  is_blocker: false
+  related_requirement: REQ-014
+- id: Q-008
+  text: 'What partial redaction format should be used for emails and UIDs? (e.g.,
+    l***@example.com, abc...xyz, first-4-chars + ***)
+
+    '
+  is_blocker: false
+  related_requirement: REQ-007
+- id: Q-009
+  text: 'The PRD says ''default allow_unauthenticated=false''. Is there a flag to
+    override this for development/testing? How do smoke tests authenticate to the
+    internal-only service?
+
+    '
+  is_blocker: true
+  related_requirement: REQ-010
+- id: Q-010
+  text: 'What is the service account naming convention? (e.g., firebase-auth-sa@project.iam...)
+    Should it be deterministic/idempotent across re-deploys?
+
+    '
+  is_blocker: false
+  related_requirement: REQ-018
+- id: Q-011
+  text: 'The PRD mentions --verify-token-from-env for smoke tests. How is a valid
+    Firebase ID token obtained for automated testing? These tokens expire in 1 hour.
+    Is there a test token refresh mechanism?
+
+    '
+  is_blocker: true
+  related_requirement: REQ-020
+- id: Q-012
+  text: 'What is the expected behaviour when FIREBASE_SERVICE_ACCOUNT_JSON is invalid
+    or has insufficient permissions? Should the service fail to start, or start and
+    return 503 on verification requests?
+
+    '
+  is_blocker: false
+  related_requirement: REQ-006
+- id: Q-013
+  text: 'Does the permission diff require interactive approval (stdin prompt) or can
+    it be auto-approved with a flag (e.g., --auto-approve)?
+
+    '
+  is_blocker: false
+  related_requirement: REQ-016
+- id: Q-014
+  text: 'What exactly constitutes ''constant-time operations where security-relevant''?
+    The Firebase Admin SDK''s verifyIdToken() is not constant-time. Is this about
+    error response timing normalisation, string comparisons, or something else?
+
+    '
+  is_blocker: false
+  related_requirement: REQ-011
+

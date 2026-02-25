@@ -1,0 +1,246 @@
+# API Contract
+# Authentication: Cloud Run IAM (service-to-service). Callers must present a valid Google OIDC token with the Cloud Run service URL as audience. This is enforced at the Cloud Run ingress layer — requests without valid IAM tokens receive 403 before reaching the application. The application itself does NOT perform caller authentication; it relies entirely on Cloud Run IAM (--no-allow-unauthenticated + --ingress=internal). The health endpoint is accessible to Cloud Run's internal health probe infrastructure.
+
+
+openapi: 3.0.0
+info:
+  title: "PRD \u2014 Firebase Auth Verification Service"
+  version: 0.1.0
+servers:
+- url: /
+paths:
+  /verify:
+    post:
+      summary: "Verify a single Firebase ID token. Returns decoded identity and claims\
+        \ on success. Returns generic 401 for any verification failure \u2014 the\
+        \ HTTP response never reveals whether the token was expired, forged, or malformed.\
+        \ Detailed rejection reason is logged server-side only.\n"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                '200':
+                  description: Token verified successfully
+                  body:
+                    uid:
+                      type: string
+                      description: Firebase user UID
+                    email:
+                      type: string
+                      nullable: true
+                      description: User email (null if not set)
+                    email_verified:
+                      type: boolean
+                      nullable: true
+                      description: Whether email is verified (null if no email)
+                    name:
+                      type: string
+                      nullable: true
+                      description: Display name from OIDC provider
+                    picture:
+                      type: string
+                      nullable: true
+                      description: Profile photo URL
+                    custom_claims:
+                      type: object
+                      description: "Custom claims set via setCustomUserClaims() \u2014\
+                        \ empty object if none"
+                    token_metadata:
+                      type: object
+                      description: Token temporal and provider context
+                      properties:
+                        iat:
+                          type: integer
+                          description: Issued-at (unix epoch seconds)
+                        exp:
+                          type: integer
+                          description: Expiration (unix epoch seconds)
+                        auth_time:
+                          type: integer
+                          description: Last authentication time (unix epoch seconds)
+                        iss:
+                          type: string
+                          description: Issuer URL
+                        sign_in_provider:
+                          type: string
+                          description: Authentication provider (google.com, password,
+                            etc.)
+        '400':
+          description: Missing or malformed request body, or token fails JWT structure
+            validation
+        '401':
+          description: "Token verification failed (generic \u2014 expired, invalid\
+            \ signature, wrong audience, revoked, etc.)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              content_type: application/json
+              body:
+                token:
+                  type: string
+                  required: true
+                  description: Firebase ID token (JWT string)
+                  validation: Must be non-empty, valid JWT structure (header.payload.signature)
+  /batch-verify:
+    post:
+      summary: "Verify up to 25 Firebase ID tokens in a single request. Returns per-token\
+        \ results \u2014 each independently valid or invalid. The batch itself always\
+        \ returns 200 if the request is well-formed; individual token failures are\
+        \ reported per-result, not as HTTP errors. Invalid tokens include a generic\
+        \ error category (expired, invalid, malformed) for operational use by the\
+        \ calling service.\n"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                '200':
+                  description: Batch processed (individual results may be valid or
+                    invalid)
+                  body:
+                    results:
+                      type: array
+                      description: Per-token results, same order as input
+                      items:
+                        valid_example:
+                          index: 0
+                          valid: true
+                          uid: abc123
+                          email: user@example.com
+                          email_verified: true
+                          custom_claims: {}
+                          token_metadata:
+                            iat: 1708300000
+                            exp: 1708303600
+                            auth_time: 1708299700
+                            iss: https://securetoken.google.com/my-project
+                            sign_in_provider: google.com
+                        invalid_example:
+                          index: 1
+                          valid: false
+                          error: expired
+                    summary:
+                      type: object
+                      properties:
+                        total:
+                          type: integer
+                        valid:
+                          type: integer
+                        invalid:
+                          type: integer
+        '400':
+          description: Missing/malformed body, empty tokens array, or more than 25
+            tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              content_type: application/json
+              body:
+                tokens:
+                  type: string[]
+                  required: true
+                  description: Array of Firebase ID tokens
+                  validation: Min 1, max 25 items. Each must be a non-empty string.
+  /user-lookup/:uid:
+    get:
+      summary: 'Look up a Firebase user profile by UID. Returns account metadata including
+        email, display name, provider data, custom claims, and disabled status. Authorized
+        via Cloud Run IAM (service-to-service).
+
+        '
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                '200':
+                  description: User found
+                  body:
+                    uid:
+                      type: string
+                    email:
+                      type: string
+                      nullable: true
+                    email_verified:
+                      type: boolean
+                    display_name:
+                      type: string
+                      nullable: true
+                    photo_url:
+                      type: string
+                      nullable: true
+                    phone_number:
+                      type: string
+                      nullable: true
+                    disabled:
+                      type: boolean
+                    custom_claims:
+                      type: object
+                      nullable: true
+                    provider_data:
+                      type: array
+                      items:
+                        provider_id: string
+                        uid: string
+                        email: string (nullable)
+                        display_name: string (nullable)
+                        photo_url: string (nullable)
+                    metadata:
+                      type: object
+                      properties:
+                        creation_time: string (ISO 8601)
+                        last_sign_in_time: string (ISO 8601)
+                        last_refresh_time: string (ISO 8601, nullable)
+        '400':
+          description: Missing or malformed UID (empty, >128 chars, invalid characters)
+        '404':
+          description: No user found with the given UID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              path_params:
+                uid:
+                  type: string
+                  required: true
+                  description: Firebase user UID
+                  validation: Non-empty, max 128 chars, alphanumeric with hyphens/underscores
+  /health:
+    get:
+      summary: "Health check for Cloud Run liveness/readiness probes and smoke tests.\
+        \ No authentication required (Cloud Run allows unauthenticated access to this\
+        \ path via IAM policy on this specific route \u2014 or more practically, the\
+        \ probe runs within Cloud Run infrastructure).\n"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                '200':
+                  description: Service is healthy
+                  body:
+                    status:
+                      type: string
+                      enum: healthy | degraded
+                    firebase_initialized:
+                      type: boolean
+                    version:
+                      type: string
+                    timestamp:
+                      type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              body: none
