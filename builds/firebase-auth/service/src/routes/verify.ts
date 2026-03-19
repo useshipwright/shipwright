@@ -1,129 +1,136 @@
-/**
- * POST /verify — single token verification (REQ-008, ADR-010).
- *
- * Validates JWT structure via validate-jwt, calls firebaseAuth.verifyIdToken(),
- * returns claims on success or generic 401 on any failure.
- *
- * Supports opt-in check_revoked parameter (default: false). When true,
- * verifyIdToken() makes an additional backend call to check if the token
- * has been revoked. v1 defaults to false per threat model (Token Replay
- * Attack — documented limitation).
- *
- * Timing normalization (ADR-010): enforces a minimum response time so that
- * fast-failing requests do not return faster than valid verifications,
- * mitigating timing side-channel attacks.
- */
+import { type FastifyInstance, type FastifyPluginAsync } from 'fastify';
+import type { FirebaseAdapter } from '../domain/types.js';
+import { validateJwtStructure, validateBatchSize } from '../domain/validators.js';
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import fp from 'fastify-plugin';
-import { isValidJwtStructure } from '../lib/validate-jwt.js';
-import { redactUid } from '../lib/redact.js';
-import { verifySchema } from '../schemas/verify.schema.js';
-import type { VerifyRequest, VerifyResponse } from '../types/index.js';
+export interface VerifyRouteOptions {
+  firebaseAdapter: FirebaseAdapter;
+}
 
-/**
- * Minimum response time in milliseconds for error responses.
- * Prevents timing oracle attacks by ensuring error paths do not return
- * faster than successful verification (ADR-010).
- */
-export const MIN_RESPONSE_TIME_MS = 100;
+const BATCH_VERIFY_MAX = 25;
 
-async function verifyRoute(app: FastifyInstance): Promise<void> {
-  app.post<{ Body: VerifyRequest }>(
-    '/verify',
-    { schema: verifySchema },
-    async (request: FastifyRequest<{ Body: VerifyRequest }>, reply: FastifyReply) => {
-      const startTime = Date.now();
-      const { token, check_revoked: checkRevoked = false } = request.body;
+const verifyRoutes: FastifyPluginAsync<VerifyRouteOptions> = async (
+  app: FastifyInstance,
+  opts: VerifyRouteOptions,
+) => {
+  const { firebaseAdapter } = opts;
 
-      // JWT structure pre-validation (REQ-009)
-      if (!isValidJwtStructure(token)) {
-        request.log.warn('Token failed JWT structure validation');
-        await normalizeResponseTime(startTime);
-        return reply.code(400).send({ error: 'Bad Request', statusCode: 400 });
-      }
+  // -------------------------------------------------------------------------
+  // POST /verify — single token verification
+  // -------------------------------------------------------------------------
 
-      try {
-        // checkRevoked defaults to false (v1 limitation — threat model: Token Replay Attack).
-        // Callers may opt in by setting check_revoked: true for sensitive operations.
-        const decoded = await app.firebaseAuth.verifyIdToken(token, checkRevoked);
+  app.post<{
+    Body: { token: string; checkRevoked?: boolean };
+  }>('/verify', {
+    config: { rateLimitClasses: ['read'] },
+  }, async (request, reply) => {
+    const { token, checkRevoked = false } = request.body ?? {};
 
-        // Extract custom claims — everything not in the standard Firebase token fields
-        const standardFields = new Set([
-          'aud',
-          'auth_time',
-          'exp',
-          'firebase',
-          'iat',
-          'iss',
-          'sub',
-          'uid',
-          'user_id',
-          'email',
-          'email_verified',
-          'name',
-          'picture',
-        ]);
-        const customClaims: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(decoded)) {
-          if (!standardFields.has(key)) {
-            customClaims[key] = value;
-          }
+    if (!token || typeof token !== 'string') {
+      return reply.status(400).send({
+        error: {
+          code: 400,
+          message: 'Missing required field: token',
+          requestId: request.requestId ?? '',
+        },
+      });
+    }
+
+    const validation = validateJwtStructure(token);
+    if (!validation.valid) {
+      return reply.status(400).send({
+        error: {
+          code: 400,
+          message: validation.error!,
+          requestId: request.requestId ?? '',
+        },
+      });
+    }
+
+    // Delegate to Firebase SDK — errors (expired, revoked, invalid signature)
+    // propagate to the error handler plugin which maps them to 401.
+    const decoded = await firebaseAdapter.verifyIdToken(token, checkRevoked);
+
+    return reply.status(200).send(decoded);
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /batch-verify — verify up to 25 tokens
+  // -------------------------------------------------------------------------
+
+  app.post<{
+    Body: { tokens: { token: string; checkRevoked?: boolean }[] };
+  }>('/batch-verify', {
+    config: { rateLimitClasses: ['read', 'batch'] },
+  }, async (request, reply) => {
+    const { tokens } = request.body ?? {};
+
+    if (!Array.isArray(tokens)) {
+      return reply.status(400).send({
+        error: {
+          code: 400,
+          message: 'Missing required field: tokens',
+          requestId: request.requestId ?? '',
+        },
+      });
+    }
+
+    const batchValidation = validateBatchSize(tokens, BATCH_VERIFY_MAX);
+    if (!batchValidation.valid) {
+      return reply.status(400).send({
+        error: {
+          code: 400,
+          message: batchValidation.error!,
+          requestId: request.requestId ?? '',
+        },
+      });
+    }
+
+    let validCount = 0;
+    let invalidCount = 0;
+
+    const results = await Promise.all(
+      tokens.map(async (entry) => {
+        const { token, checkRevoked = false } = entry ?? {};
+
+        // Validate JWT structure before calling Firebase SDK
+        if (!token || typeof token !== 'string') {
+          invalidCount++;
+          return { valid: false, error: 'Missing required field: token' };
         }
 
-        const response: VerifyResponse = {
-          uid: decoded.uid,
-          email: decoded.email ?? null,
-          email_verified: decoded.email_verified ?? null,
-          name: (decoded as Record<string, unknown>).name as string ?? null,
-          picture: decoded.picture ?? null,
-          custom_claims: customClaims,
-          token_metadata: {
-            iat: decoded.iat,
-            exp: decoded.exp,
-            auth_time: decoded.auth_time,
-            iss: decoded.iss,
-            sign_in_provider: decoded.firebase?.sign_in_provider ?? 'unknown',
-          },
-        };
+        const jwtValidation = validateJwtStructure(token);
+        if (!jwtValidation.valid) {
+          invalidCount++;
+          return { valid: false, error: jwtValidation.error! };
+        }
 
-        const latencyMs = Date.now() - startTime;
-        request.log.info(
-          { uid: redactUid(decoded.uid), latencyMs },
-          'Token verified successfully',
-        );
+        try {
+          const decoded = await firebaseAdapter.verifyIdToken(token, checkRevoked);
+          validCount++;
+          return {
+            valid: true,
+            uid: decoded.uid,
+            email: decoded.email,
+            claims: decoded.claims,
+          };
+        } catch (err: unknown) {
+          invalidCount++;
+          const message =
+            err instanceof Error ? err.message : 'Token verification failed';
+          return { valid: false, error: message };
+        }
+      }),
+    );
 
-        return reply.code(200).send(response);
-      } catch (err) {
-        const latencyMs = Date.now() - startTime;
-        // Log detailed error server-side only (REQ-008)
-        request.log.warn(
-          { err, latencyMs },
-          'Token verification failed',
-        );
+    return reply.status(200).send({
+      results,
+      summary: {
+        total: tokens.length,
+        valid: validCount,
+        invalid: invalidCount,
+      },
+    });
+  });
+};
 
-        // Normalize timing — error responses must not return faster than successes (ADR-010)
-        await normalizeResponseTime(startTime);
-
-        return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
-    },
-  );
-}
-
-/**
- * Ensures the response takes at least MIN_RESPONSE_TIME_MS from startTime.
- * Prevents timing oracle attacks by normalizing error response timing (ADR-010).
- */
-export async function normalizeResponseTime(startTime: number): Promise<void> {
-  const elapsed = Date.now() - startTime;
-  const remaining = MIN_RESPONSE_TIME_MS - elapsed;
-  if (remaining > 0) {
-    await new Promise((resolve) => setTimeout(resolve, remaining));
-  }
-}
-
-export default fp(verifyRoute, {
-  name: 'verify-route',
-  dependencies: ['firebase', '@fastify/sensible'],
-});
+export default verifyRoutes;

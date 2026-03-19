@@ -1,0 +1,89 @@
+dependency_issues:
+- "T-025 outputs types.test.ts which tests domain/types.ts (T-003), but T-003 is not\
+  \ listed as a direct dependency of T-025. It is only transitively reachable via\
+  \ T-004\u2192T-003 and T-005\u2192T-003. Add T-003 as an explicit dependency."
+- "T-019 (session routes) does not list T-005 (domain validators) as a dependency\
+  \ despite using validateSessionDuration from domain validators. Acceptance criteria\
+  \ explicitly references validateSessionDuration. Currently deps are [T-005, T-006,\
+  \ T-013] \u2014 correction: T-005 IS listed. No issue. (Retracted.)"
+gaps:
+- category: architecture
+  description: CORS_ORIGIN is declared as an env_requirement, read and validated by
+    config (T-004), but no task configures CORS middleware (@fastify/cors or equivalent).
+    No plugin registers CORS, T-023 plugin registration order omits it, and T-002
+    doesn't list @fastify/cors as a production dependency.
+  source: architecture.md (config component), pack.yaml env_requirements
+  suggested_task:
+    deps:
+    - T-004
+    description: If CORS_ORIGIN is set in config, register @fastify/cors with the
+      configured origin in buildApp(). Add @fastify/cors to package.json production
+      dependencies. When CORS_ORIGIN is unset, skip CORS registration (internal-only
+      service).
+    name: Add CORS configuration to app bootstrap
+    outputs: []
+    risk: low
+- category: architecture
+  description: T-023 graceful shutdown requires 'close Firebase SDK' but neither T-003
+    (FirebaseAdapter interface) nor T-006 (firebase-adapter implementation) define
+    a close/destroy/shutdown method. firebase-admin uses app.delete() to clean up.
+    The adapter interface and implementation must expose this for the SIGTERM handler
+    to call.
+  source: architecture.md (server component, firebase-adapter component)
+  suggested_task:
+    deps:
+    - T-003
+    description: Add a close() or shutdown() method to the FirebaseAdapter interface
+      in domain/types.ts and implement it in firebase-adapter.ts by calling firebase
+      app.delete(). T-023 SIGTERM handler calls this method.
+    name: Add shutdown method to FirebaseAdapter
+    outputs: []
+    risk: low
+- category: architecture
+  description: Rate limiter T-012 states 'Route metadata declares which rate limit
+    classes apply' but no route task (T-014 through T-022) has acceptance criteria
+    for declaring rate limit class metadata (read, mutation, batch) on their routes.
+    Without this metadata, the rate limiter cannot distinguish request classes.
+  source: architecture.md (plugins/rate-limiter), ADR-005
+  suggested_task:
+    deps: []
+    description: Each route task should declare its rate limit classes via Fastify
+      route config. E.g., POST /verify = [read], POST /users = [mutation], POST /batch-verify
+      = [read, batch], POST /users/batch-delete = [mutation, batch]. Add as acceptance
+      criteria to T-015 through T-022.
+    name: Add rate-limit class metadata to route acceptance criteria
+    outputs: []
+    risk: low
+- category: security
+  description: "Threat model flags /metrics as exposing operational data (request\
+    \ counts per path, SDK usage patterns, attack attempt counts). The mitigation\
+    \ suggests 'restricting /metrics to internal scraper IPs or adding authentication.'\
+    \ No task addresses this \u2014 T-010 unconditionally exposes /metrics without\
+    \ auth, and T-011 explicitly skips /metrics. Consider at minimum documenting the\
+    \ risk in acceptance criteria or adding an optional auth mechanism."
+  source: threat_model.md (Information leakage via /metrics)
+  suggested_task:
+    deps: []
+    description: "Add acceptance criterion to T-010 or T-011 acknowledging that /metrics\
+      \ is intentionally unauthenticated for Prometheus scraping, and that operators\
+      \ should restrict access via Cloud Run ingress settings or network policy. Not\
+      \ a code change \u2014 an explicit acceptance of the risk."
+    name: Document /metrics exposure risk
+    outputs: []
+    risk: low
+- category: prd_mismatch
+  description: "Architecture doc for routes/claims still says 'DELETE /users/:uid/claims\
+    \ \u2014 sets claims to {}' but PRD validation and T-018 PRD-FIX correctly use\
+    \ setCustomUserClaims(uid, null). The architecture text is stale. While T-018\
+    \ is correct, the inconsistency could confuse the implementer if they read the\
+    \ architecture component description."
+  source: "prd_validation.md (\xA76 CAP-4: DELETE claims)"
+  suggested_task:
+    deps: []
+    description: Update the routes/claims architecture component description to say
+      'sets claims to null' instead of 'sets claims to {}' to match ADR-009 PRD-FIX
+      and T-018 acceptance criteria.
+    name: Correct architecture claims description
+    outputs: []
+    risk: low
+tasks_added: 5

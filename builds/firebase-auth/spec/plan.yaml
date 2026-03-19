@@ -1,0 +1,1573 @@
+tasks:
+- id: T-001
+  name: Finalize pack manifest
+  description: 'Create the pack.yaml manifest with all metadata, capability declarations,
+    environment variable definitions, host requirements, and deploy configuration
+    for the firebase-auth pack. This is the root artifact that the Shipwright engine
+    reads to understand the pack.
+
+    '
+  deps: []
+  inputs: []
+  outputs:
+  - packs/firebase-auth/pack.yaml
+  acceptance_criteria:
+  - pack.yaml has id set to firebase-auth and a descriptive name field
+  - pack.yaml declares all 9 capabilities matching the pack contract (token_verification,
+    user_lookup, user_management, custom_claims, session_cookies, token_operations,
+    email_action_links, batch_operations, health)
+  - pack.yaml lists all 11 env_requirements from the pack contract (FIREBASE_SERVICE_ACCOUNT_JSON,
+    API_KEYS, PORT, LOG_LEVEL, RATE_LIMIT_READ, RATE_LIMIT_MUTATION, RATE_LIMIT_BATCH,
+    SESSION_COOKIE_MAX_AGE, SHUTDOWN_TIMEOUT, NODE_ENV, CORS_ORIGIN)
+  - pack.yaml specifies deploy.service_account.name and required IAM roles including
+    firebaseauth.admin, iam.serviceAccountTokenCreator, and serviceusage.serviceUsageConsumer
+    per ADR-011
+  - pack.yaml specifies compatibility.min_versions.node as 22 and compatibility.min_versions.pnpm
+    as 8
+  - pack.yaml lists all host_requirements from the pack contract
+  - pack.yaml is valid YAML and parseable without errors
+  - '[THREAT] Default ingress is internal-only, but misconfiguration could expose
+    the service publicly. Pack deploy should explicitly set --ingress=internal. Smoke '
+  checks:
+  - lint
+  allowed_paths:
+  - packs/firebase-auth/pack.yaml
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-002
+  name: Scaffold project structure
+  description: 'Set up the foundational project files including package.json with
+    all production and dev dependencies, TypeScript configuration targeting Node 22,
+    ESLint and Prettier configs, and Vitest test configuration. This establishes the
+    toolchain all subsequent tasks depend on.
+
+    '
+  deps:
+  - T-001
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/package.json
+  - packs/firebase-auth/template/tsconfig.json
+  - packs/firebase-auth/template/.eslintrc.cjs
+  - packs/firebase-auth/template/.prettierrc
+  - packs/firebase-auth/template/vitest.config.ts
+  acceptance_criteria:
+  - package.json has name, version, and main/types entry points
+  - package.json lists all production dependencies including fastify, firebase-admin,
+    prom-client, and pino
+  - package.json lists dev dependencies including typescript, vitest, eslint, prettier,
+    and their plugins
+  - package.json scripts include dev, build, start, test, lint, and format
+  - tsconfig.json targets ES2022 or later with NodeNext module resolution for Node
+    22
+  - tsconfig.json enables strict mode and sets outDir to dist
+  - .eslintrc.cjs configures TypeScript ESLint parser and recommended rules
+  - .prettierrc sets consistent formatting options (singleQuote, trailingComma, printWidth)
+  - vitest.config.ts configures test root, coverage, and any path aliases matching
+    tsconfig
+  - package.json engine field requires node >= 22 and pnpm >= 8
+  - '[THREAT] Flat authorization model enables privilege escalation'
+  checks: []
+  allowed_paths:
+  - packs/firebase-auth/template/package.json
+  - packs/firebase-auth/template/tsconfig.json
+  - packs/firebase-auth/template/.eslintrc.cjs
+  - packs/firebase-auth/template/.prettierrc
+  - packs/firebase-auth/template/vitest.config.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-003
+  name: Shared types and interfaces
+  description: 'Define all shared TypeScript types and interfaces used across the
+    application layers. Includes domain shapes like UserProfile, DecodedToken, BatchVerifyResult,
+    AuditEntry, ErrorResponse, RateLimitClass, RouteMetadata, and the FirebaseAdapter
+    interface.
+
+    '
+  deps:
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/domain/types.ts
+  acceptance_criteria:
+  - types.ts exports a UserProfile type with uid, email, emailVerified, displayName,
+    phoneNumber, photoURL, disabled, metadata, customClaims, and providerData fields
+  - types.ts exports a DecodedToken type with uid, email, emailVerified, claims, iss,
+    aud, iat, exp, and auth_time fields
+  - types.ts exports a BatchVerifyResult type with results array (valid, uid, email,
+    claims, error) and summary (total, valid, invalid)
+  - types.ts exports an AuditEntry type with event, target, and changes fields
+  - types.ts exports an ErrorResponse type with error object containing code (numeric),
+    message, and requestId
+  - types.ts exports a RateLimitClass enum or union type with read, mutation, and
+    batch values
+  - types.ts exports a RouteMetadata type with rateLimitClasses array
+  - types.ts exports a FirebaseAdapter interface listing all adapter methods from
+    the architecture
+  - All types use readonly modifiers where appropriate for immutability
+  - '[BARREL] Verify this module is imported and registered in the barrel file (routes/index.ts
+    or plugins/index.ts)'
+  - '[OPUS] Remove the BARREL criterion. Replace with - types.ts is importable via
+    domain/types and consumed by firebase-adapter and all route modules'
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/domain/types.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-004
+  name: Config module
+  description: 'Implement the configuration module that loads, validates, and exports
+    a typed frozen config object from environment variables. Parses FIREBASE_SERVICE_ACCOUNT_JSON
+    and API_KEYS, deriving key IDs as sha256(key).slice(0,8) per ADR-003. Fails fast
+    on missing required vars.
+
+    '
+  deps:
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/infra/config.ts
+  acceptance_criteria:
+  - config.ts reads and validates FIREBASE_SERVICE_ACCOUNT_JSON (required, sensitive)
+  - config.ts reads and validates API_KEYS (required, sensitive), parsing comma-separated
+    values into a Map keyed by sha256(key).slice(0,8) per ADR-003
+  - config.ts reads PORT with default 3000
+  - config.ts reads LOG_LEVEL with default info
+  - config.ts reads RATE_LIMIT_READ with default 200
+  - config.ts reads RATE_LIMIT_MUTATION with default 50
+  - config.ts reads RATE_LIMIT_BATCH with default 20
+  - config.ts reads SESSION_COOKIE_MAX_AGE with default 1209600000
+  - config.ts reads SHUTDOWN_TIMEOUT with default 10000
+  - config.ts reads NODE_ENV with default production
+  - config.ts reads CORS_ORIGIN (optional, no default) and logs a warning if unset
+    in production
+  - config.ts throws a descriptive error at startup if FIREBASE_SERVICE_ACCOUNT_JSON
+    or API_KEYS is missing or empty
+  - Exported config object is frozen (Object.freeze) to prevent mutation
+  - FIREBASE_SERVICE_ACCOUNT_JSON is parsed as JSON and the credential is only exposed
+    via a serviceAccountCredential field
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/infra/config.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-005
+  name: Domain validators
+  description: 'Implement pure validation functions with no external dependencies.
+    Each function returns a result object with valid boolean and optional error string.
+    Covers email, phone (E.164), UID, JWT structure, claims size/reserved names, session
+    duration, and batch size validation.
+
+    '
+  deps:
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/domain/validators.ts
+  acceptance_criteria:
+  - validators.ts exports validateEmail that checks for valid email format
+  - validators.ts exports validatePhone that validates E.164 phone number format (leading
+    +, digits only, 7-15 digits)
+  - validators.ts exports validateUid that enforces max 128 character limit and non-empty
+  - validators.ts exports validateJwtStructure that checks for 3 dot-separated base64url
+    segments
+  - validators.ts exports validateClaimsSize that enforces JSON.stringify().length
+    <= 1000 characters per ADR-009/ADR-010
+  - validators.ts exports validateReservedClaims that rejects Firebase reserved claim
+    names
+  - validators.ts exports validateSessionDuration that enforces range 300000ms to
+    1209600000ms
+  - validators.ts exports validateBatchSize that checks array length against a configurable
+    max
+  - All validators return a consistent shape with valid boolean and optional error
+    string
+  - Validators have no side effects, no HTTP concerns, and no imports from other application
+    modules
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/domain/validators.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-006
+  name: Firebase Admin SDK adapter
+  description: 'Implement the thin adapter wrapping firebase-admin/auth per ADR-001.
+    This is the ONLY module that imports firebase-admin. Initializes the SDK from
+    the config service account credential, performs a startup health probe per ADR-004,
+    and exposes all Admin Auth SDK methods as async functions.
+
+    '
+  deps:
+  - T-004
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/infra/firebase-adapter.ts
+  acceptance_criteria:
+  - firebase-adapter.ts is the only module that imports firebase-admin
+  - firebase-adapter.ts initializes Firebase Admin SDK using the serviceAccountCredential
+    from config
+  - firebase-adapter.ts exports all methods listed in the architecture (verifyIdToken,
+    getUser, getUserByEmail, getUserByPhoneNumber, getUsers, createUser, updateUser,
+    deleteUser, deleteUsers, listUsers, setCustomUserClaims, revokeRefreshTokens,
+    createSessionCookie, verifySessionCookie, createCustomToken, generatePasswordResetLink,
+    generateEmailVerificationLink, generateSignInWithEmailLink)
+  - firebase-adapter.ts exports an isHealthy() method returning boolean
+  - firebase-adapter.ts exports a projectId getter
+  - Startup health probe calls getUser with a nonexistent UID and expects auth/user-not-found
+    per ADR-004
+  - Startup fails fast if health probe returns any error other than auth/user-not-found
+  - Adapter implements the FirebaseAdapter interface from domain/types.ts
+  - '[PRD-FIX] Use roles/firebaseauth.admin is confirmed as ''Full read/write access''.
+    However, the docs note TWO additional requirements not listed in the PRD: (1)
+    createCustomToken() requires iam.serviceAccounts...'
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/infra/firebase-adapter.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-007
+  name: Log redactor plugin
+  description: 'Implement the Pino log redaction configuration and helper functions.
+    Configures redaction paths for API keys in headers, password fields in request
+    bodies, and PII. Exports redactEmail() and redactUid() helpers for partial redaction
+    in audit and error contexts.
+
+    '
+  deps:
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/log-redactor.ts
+  acceptance_criteria:
+  - log-redactor.ts exports Pino redact configuration that covers req.headers["x-api-key"]
+    and request body password fields
+  - log-redactor.ts exports a redactEmail() helper that partially redacts emails (e.g.,
+    u***@example.com)
+  - log-redactor.ts exports a redactUid() helper that partially redacts UIDs (e.g.,
+    abc...xyz)
+  - redactEmail() and redactUid() handle malformed or adversarial input safely without
+    throwing
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  - Redaction paths prevent FIREBASE_SERVICE_ACCOUNT_JSON from appearing in any log
+    output
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/log-redactor.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-008
+  name: Request context plugin
+  description: 'Implement the Fastify onRequest hook that reads or generates X-Request-ID
+    for correlation. Decorates the request with requestId and creates a Pino child
+    logger with the requestId binding. Sets X-Request-ID on the response for downstream
+    correlation.
+
+    '
+  deps:
+  - T-003
+  - T-007
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/request-context.ts
+  acceptance_criteria:
+  - request-context.ts reads X-Request-ID from the incoming request header if present
+  - request-context.ts generates a UUIDv4 if X-Request-ID header is absent
+  - request-context.ts decorates request.requestId with the correlation ID
+  - request-context.ts sets X-Request-ID header on the response
+  - request-context.ts creates a Pino child logger bound with the requestId
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/request-context.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-009
+  name: Error handler plugin
+  description: 'Implement the Fastify setErrorHandler that maps Firebase Admin error
+    codes and validation errors to proper HTTP status codes per ADR-006 and ADR-007.
+    Ensures all error responses use the standard envelope shape with numeric code,
+    message, and requestId.
+
+    '
+  deps:
+  - T-003
+  - T-007
+  - T-008
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/error-handler.ts
+  acceptance_criteria:
+  - error-handler.ts maps auth/user-not-found to 404
+  - error-handler.ts maps auth/id-token-expired, auth/id-token-revoked, and auth/argument
+    to 401
+  - error-handler.ts maps auth/invalid-* errors to 400
+  - error-handler.ts maps auth/insufficient-permission to 500
+  - error-handler.ts maps auth/quota-exceeded to 503
+  - error-handler.ts maps auth/internal-error and network errors to 502 per ADR-007
+  - error-handler.ts maps Fastify validation errors to 400
+  - All error responses use the shape with error.code as numeric HTTP status, error.message,
+    and error.requestId per ADR-006
+  - Generic messages are returned for 401 and 403 responses to prevent information
+    leakage
+  - Detailed errors are logged server-side only via request.log
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/error-handler.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-010
+  name: Metrics plugin
+  description: 'Implement Prometheus metrics collection using prom-client. Registers
+    counters and histograms for HTTP requests, Firebase SDK calls, rate limit violations,
+    and active connections. Uses onRequest/onResponse hooks for HTTP metrics. Exposes
+    GET /metrics endpoint without auth.
+
+    '
+  deps:
+  - T-003
+  - T-007
+  - T-008
+  - T-009
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/metrics.ts
+  acceptance_criteria:
+  - metrics.ts registers http_requests_total counter with method and path labels
+  - metrics.ts registers http_request_duration_seconds histogram
+  - metrics.ts registers firebase_admin_calls_total counter and firebase_admin_call_duration_seconds
+    histogram
+  - metrics.ts registers rate_limit_exceeded_total counter with class label
+  - metrics.ts registers active_connections gauge
+  - metrics.ts exposes GET /metrics route that returns Prometheus text format without
+    authentication
+  - metrics.ts exports a metricsWrapper function for wrapping firebase-adapter calls
+  - onRequest and onResponse hooks measure HTTP request duration and increment counters
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/metrics.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-011
+  name: API key auth plugin
+  description: 'Implement the Fastify onRequest authentication hook. Skips /health
+    and /metrics. Reads X-API-Key header and performs constant-time comparison using
+    crypto.timingSafeEqual against all configured keys. On match, decorates request
+    with apiKeyId. Returns 401 on failure.
+
+    '
+  deps:
+  - T-004
+  - T-007
+  - T-008
+  - T-009
+  - T-010
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/api-key-auth.ts
+  acceptance_criteria:
+  - api-key-auth.ts skips authentication for GET /health and GET /metrics routes
+  - api-key-auth.ts reads the X-API-Key header from incoming requests
+  - api-key-auth.ts uses crypto.timingSafeEqual for constant-time comparison against
+    all configured keys
+  - api-key-auth.ts iterates all keys without early exit on first mismatch to prevent
+    timing attacks
+  - api-key-auth.ts decorates request.apiKeyId with the sha256 prefix on successful
+    match
+  - api-key-auth.ts returns 401 with generic message on missing or invalid key, not
+    distinguishing between the two
+  - api-key-auth.ts never logs API key values
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/api-key-auth.ts
+  risk: high
+  requires_approval: true
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-012
+  name: Rate limiter plugin
+  description: 'Implement in-memory sliding-window rate limiting per ADR-002. Three
+    token buckets per API key (read, mutation, batch). Route metadata declares applicable
+    classes. Endpoints in multiple classes consume from all buckets. Returns 429 with
+    Retry-After header on exceeded limits.
+
+    '
+  deps:
+  - T-004
+  - T-010
+  - T-011
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/rate-limiter.ts
+  acceptance_criteria:
+  - rate-limiter.ts implements in-memory sliding-window rate limiting per ADR-002
+  - rate-limiter.ts maintains three buckets per API key for read, mutation, and batch
+    classes
+  - rate-limiter.ts reads limits from config (RATE_LIMIT_READ, RATE_LIMIT_MUTATION,
+    RATE_LIMIT_BATCH)
+  - rate-limiter.ts uses preHandler hook so it runs after api-key-auth (apiKeyId is
+    available)
+  - Endpoints in multiple rate classes (e.g., batch-verify) consume from all applicable
+    buckets
+  - rate-limiter.ts returns 429 with Retry-After header when any bucket is exceeded
+  - rate-limiter.ts increments rate_limit_exceeded_total Prometheus counter with class
+    label on exceed
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/rate-limiter.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-013
+  name: Audit logger plugin
+  description: 'Implement the audit logging function that mutation route handlers
+    call after successful Firebase SDK operations. Writes structured JSON to stdout
+    via request.log with event type, actor (apiKeyId), target UID, ISO-8601 timestamp,
+    requestId, and changed field names only.
+
+    '
+  deps:
+  - T-003
+  - T-007
+  - T-008
+  - T-009
+  - T-010
+  - T-011
+  - T-012
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/plugins/audit-logger.ts
+  acceptance_criteria:
+  - audit-logger.ts exports an emitAudit(request, AuditEntry) function
+  - Audit entries include event type, actor (request.apiKeyId), target UID, ISO-8601
+    timestamp, and requestId
+  - Audit entries include changes.fields (field names only, no values) to avoid PII
+    leakage
+  - Audit entries are written as structured JSON to stdout via request.log
+  - emitAudit never logs PII values (passwords, full emails, full phone numbers)
+  - Plugin is implemented as a Fastify plugin registered in plugins/index.ts barrel
+    file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/plugins/audit-logger.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-014
+  name: Health route
+  description: 'Implement GET /health returning service status, version, uptime, and
+    Firebase connectivity. No authentication or rate limiting required. Always returns
+    200 even if Firebase status is error. Used by Cloud Run health probes and smoke
+    tests.
+
+    '
+  deps:
+  - T-006
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/health.ts
+  acceptance_criteria:
+  - health.ts implements GET /health endpoint
+  - Response includes status (ok), version (from package.json or BUILD_SHA env), uptime
+    (process.uptime() in seconds), and firebase (connected or error)
+  - Endpoint always returns HTTP 200 even when Firebase connectivity is degraded
+  - Endpoint does not require authentication or rate limiting
+  - health.ts calls firebaseAdapter.isHealthy() to determine Firebase connectivity
+    status
+  - Route is registered in routes/index.ts barrel file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/health.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-009
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-015
+  name: Token verification routes
+  description: 'Implement POST /verify for single token verification and POST /batch-verify
+    for batch verification of up to 25 tokens. Validates JWT structure before passing
+    to Firebase SDK. Batch returns per-token results with a summary of total, valid,
+    and invalid counts.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/verify.ts
+  acceptance_criteria:
+  - verify.ts implements POST /verify accepting token (required) and checkRevoked
+    (optional, default false)
+  - POST /verify validates JWT structure (3 dot-separated base64url segments) before
+    calling Firebase SDK
+  - POST /verify returns decoded claims including uid, email, emailVerified, claims,
+    iss, aud, iat, exp, auth_time on success
+  - verify.ts implements POST /batch-verify accepting tokens array (max 25 entries)
+  - POST /batch-verify returns per-token results with valid, uid, email, claims, and
+    error fields plus a summary with total, valid, and invalid counts
+  - POST /batch-verify returns 400 for empty array or arrays exceeding 25 tokens
+  - Route is registered in routes/index.ts barrel file
+  - '[THREAT] verifyIdToken without checkRevoked=true performs local JWT verification
+    only (no network call). Revoked tokens remain valid until natural expiry (up t'
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/verify.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-001
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-016
+  name: User lookup routes
+  description: 'Implement user lookup endpoints: GET /users/:uid, GET /users/by-email/:email,
+    GET /users/by-phone/:phoneNumber, and POST /users/batch. Validates inputs and
+    returns full UserProfile shapes. Batch lookup supports up to 100 mixed identifiers
+    per ADR-008.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/users-lookup.ts
+  acceptance_criteria:
+  - users-lookup.ts implements GET /users/:uid with UID validation (max 128 chars)
+  - users-lookup.ts implements GET /users/by-email/:email with email format validation
+  - users-lookup.ts implements GET /users/by-phone/:phoneNumber with E.164 phone validation
+  - users-lookup.ts implements POST /users/batch accepting up to 100 mixed identifiers
+    per ADR-008
+  - POST /users/batch validates each identifier has exactly one key (uid, email, or
+    phoneNumber)
+  - All lookup endpoints return UserProfile shape on success and 404 for not found
+  - All lookup endpoints return 400 for invalid input format
+  - Route is registered in routes/index.ts barrel file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/users-lookup.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-002
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-017
+  name: User management routes
+  description: 'Implement user CRUD operations: POST /users, PATCH /users/:uid, DELETE
+    /users/:uid, POST /users/:uid/disable, and POST /users/:uid/enable. Validates
+    all inputs and emits audit events on every mutation via the audit logger plugin.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/users-management.ts
+  acceptance_criteria:
+  - users-management.ts implements POST /users for creating user accounts with input
+    validation
+  - users-management.ts implements PATCH /users/:uid for updating user properties
+  - users-management.ts implements DELETE /users/:uid returning 204 on success
+  - users-management.ts implements POST /users/:uid/disable and POST /users/:uid/enable
+  - All mutation endpoints emit audit events via emitAudit with event type, target
+    UID, and changed field names
+  - PATCH /users/:uid returns 409 when email or phone is already in use
+  - Password values are never logged or returned in responses
+  - Route is registered in routes/index.ts barrel file
+  - "[PRD-FIX] Use The SDK clears claims via setCustomUserClaims(uid, null), not setCustomUserClaims(uid,\
+    \ {}). Passing null is the documented way to remove all custom claims. (not DELETE\
+    \ /users/:uid/claims \u2014 Remo..."
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/users-management.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-003
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-018
+  name: Custom claims routes
+  description: 'Implement PUT /users/:uid/claims for setting custom claims and DELETE
+    /users/:uid/claims for removing all claims. Validates claims size (JSON.stringify
+    length <= 1000 characters per ADR-009) and checks for reserved claim names. Both
+    operations emit audit events.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/claims.ts
+  acceptance_criteria:
+  - claims.ts implements PUT /users/:uid/claims with claims size validation (JSON.stringify().length
+    <= 1000 characters per ADR-009/ADR-010)
+  - claims.ts implements DELETE /users/:uid/claims using setCustomUserClaims(uid,
+    null) to clear claims
+  - PUT /users/:uid/claims validates against reserved Firebase claim names before
+    calling SDK
+  - DELETE /users/:uid/claims returns 204 on success
+  - Both endpoints emit audit events with field names changed
+  - Both endpoints validate UID format before processing
+  - Route is registered in routes/index.ts barrel file
+  - '[PRD-FIX] Use INCORRECT. The limit is 1000 characters based on JSON.stringify().length
+    (JavaScript string length / UTF-16 code units), NOT UTF-8 byte length. Source
+    code checks: request.customAttributes.leng...'
+  - "[PRD-FIX] Use INCORRECT. Same issue as \xA76 CAP-4: the limit is 1000 characters\
+    \ (JSON.stringify length), not 1000 bytes. (not Custom claims payload size (max\
+    \ 1000 bytes))"
+  - '[THREAT] Any API key holder can set arbitrary custom claims (e.g., role=admin)
+    on any user. Claims propagate to ID tokens on next refresh, potentially granting'
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/claims.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-004
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-019
+  name: Session cookie routes
+  description: 'Implement POST /sessions to create session cookies from Firebase ID
+    tokens and POST /sessions/verify to verify session cookies with optional revocation
+    checking. Validates session duration range (5 min to 14 days).
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-018
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/sessions.ts
+  acceptance_criteria:
+  - sessions.ts implements POST /sessions accepting idToken and expiresIn parameters
+  - sessions.ts validates expiresIn is within 300000ms to 1209600000ms range using
+    validateSessionDuration
+  - POST /sessions returns the created session cookie string on success
+  - sessions.ts implements POST /sessions/verify accepting sessionCookie and optional
+    checkRevoked parameter
+  - POST /sessions/verify returns decoded claims on valid cookie
+  - Route is registered in routes/index.ts barrel file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/sessions.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-005
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-020
+  name: Token operations routes
+  description: 'Implement POST /tokens/custom for minting custom tokens with optional
+    claims and POST /users/:uid/revoke for revoking all refresh tokens for a user.
+    Validates claims size and UID format. Emits audit events on revocation.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-018
+  - T-019
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/tokens.ts
+  acceptance_criteria:
+  - tokens.ts implements POST /tokens/custom accepting uid and optional claims with
+    size validation (JSON.stringify().length <= 1000 per ADR-009)
+  - POST /tokens/custom returns the minted custom token string
+  - tokens.ts implements POST /users/:uid/revoke that revokes all refresh tokens
+  - POST /users/:uid/revoke emits an audit event and returns success confirmation
+  - Both endpoints validate UID format using domain validators
+  - Route is registered in routes/index.ts barrel file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/tokens.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-006
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-021
+  name: Email action links routes
+  description: 'Implement POST /email-actions/password-reset, POST /email-actions/verification,
+    and POST /email-actions/sign-in. Validates email format. Sign-in requires actionCodeSettings
+    with url and handleCodeInApp. Passes actionCodeSettings through to Firebase SDK
+    per Q-008.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-018
+  - T-019
+  - T-020
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/email-actions.ts
+  acceptance_criteria:
+  - email-actions.ts implements POST /email-actions/password-reset accepting email
+    and optional actionCodeSettings
+  - email-actions.ts implements POST /email-actions/verification accepting email and
+    optional actionCodeSettings
+  - email-actions.ts implements POST /email-actions/sign-in accepting email and required
+    actionCodeSettings with url and handleCodeInApp
+  - All endpoints validate email format using domain validators
+  - POST /email-actions/sign-in returns 400 if actionCodeSettings is missing or lacks
+    url/handleCodeInApp
+  - actionCodeSettings fields (url, handleCodeInApp, iOS, android, dynamicLinkDomain)
+    are passed through to Firebase SDK without additional validation per Q-008
+  - All endpoints return the generated action link on success
+  - Route is registered in routes/index.ts barrel file
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/email-actions.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-007
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-022
+  name: Batch operations routes
+  description: 'Implement POST /users/batch-delete for bulk deletion of up to 1000
+    users and GET /users for paginated user listing (max 1000 per page). Batch delete
+    returns success/failure counts and error details. Both operations emit appropriate
+    audit events.
+
+    '
+  deps:
+  - T-005
+  - T-006
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-018
+  - T-019
+  - T-020
+  - T-021
+  - T-003
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/routes/batch-operations.ts
+  acceptance_criteria:
+  - batch-operations.ts implements POST /users/batch-delete accepting uids array (max
+    1000)
+  - POST /users/batch-delete returns success count, failure count, and error details
+    per failed UID
+  - POST /users/batch-delete emits an audit event with the count of deleted users
+  - batch-operations.ts implements GET /users with optional maxResults (default and
+    max 1000) and pageToken parameters
+  - GET /users returns paginated user list with users array and optional nextPageToken
+  - Both endpoints validate batch size limits before calling Firebase SDK
+  - Route is registered in routes/index.ts barrel file
+  - "[PRD-FIX] Use INCORRECT default. Domain docs state: 'Default and maximum maxResults\
+    \ = 1000'. The PRD claims default is 100 but the Firebase SDK default is 1000.\
+    \ (not GET /users \u2014 List users with pagination. ..."
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/routes/batch-operations.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids:
+  - CAP-008
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-023
+  name: Wiring and bootstrap
+  description: 'Wire together all modules into a working application. The composition
+    root constructs all service singletons. The app module builds the Fastify instance
+    with all plugins and routes. The server entry point handles startup, SIGTERM graceful
+    shutdown, and process lifecycle. Barrel files export all plugins and routes for
+    registration.
+
+    '
+  deps:
+  - T-007
+  - T-008
+  - T-009
+  - T-010
+  - T-011
+  - T-012
+  - T-013
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-018
+  - T-019
+  - T-020
+  - T-021
+  - T-022
+  - T-003
+  - T-032
+  - T-033
+  - T-035
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/src/composition-root.ts
+  - packs/firebase-auth/template/src/app.ts
+  - packs/firebase-auth/template/src/server.ts
+  - packs/firebase-auth/template/src/plugins/index.ts
+  - packs/firebase-auth/template/src/routes/index.ts
+  acceptance_criteria:
+  - composition-root.ts constructs all service singletons (config, firebaseAdapter,
+    metricsWrapper) and exports them as a typed dependencies object
+  - server.ts imports and calls composition-root to obtain dependencies, then passes
+    them to buildApp()
+  - app.ts exports buildApp() that accepts the dependencies object and never uses
+    empty or default parameters
+  - buildApp() registers plugins in strict order per ADR-005 (log-redactor, request-context,
+    metrics, error-handler, api-key-auth, rate-limiter, audit-logger) then registers
+    routes
+  - plugins/index.ts barrel file exports all plugin modules (log-redactor, request-context,
+    metrics, error-handler, api-key-auth, rate-limiter, audit-logger)
+  - routes/index.ts barrel file exports all route modules (health, verify, users-lookup,
+    users-management, claims, sessions, tokens, email-actions, batch-operations)
+  - server.ts installs SIGTERM handler that stops accepting connections, drains in-flight
+    requests up to SHUTDOWN_TIMEOUT, closes Firebase SDK, and exits 0
+  - server.ts binds to the configured PORT and logs startup success
+  - "[THREAT] No per-endpoint or per-operation authorization exists \u2014 all valid\
+    \ keys have identical permissions. Implement key rotation procedures. Consider\
+    \ adding "
+  - '[THREAT] POST /users/batch-delete accepts up to 1000 UIDs. A compromised key
+    could delete a significant portion of users rapidly. Rate limiting (20/min batch) '
+  - '[ARCH] Add criterion to T-023 - routes/index.ts registers DELETE /users/:uid/claims
+    handler that calls setCustomUserClaims(uid, null) not setCustomUserClaims(uid,
+    empty-object) per ADR-009'
+  - '[PROD] metricsWrapper (or firebase-adapter directly) enforces a configurable
+    timeout (default 10s) on all Firebase Admin SDK calls. Timed-out calls reject
+    with a gateway timeout error mapped to 504 by error-handler.'
+  - '[PROD] buildApp() passes trustProxy: true to Fastify constructor'
+  - '[PROD] buildApp() or composition-root.ts startup sequence asserts config object
+    contains no string values matching /TODO|PLACEHOLDER|CHANGEME|xxx/i'
+  - '[PROD] @fastify/helmet is registered in buildApp() with sensible defaults (noSniff,
+    frameguard deny, HSTS). Listed in package.json production dependencies.'
+  checks:
+  - lint
+  - typecheck
+  allowed_paths:
+  - packs/firebase-auth/template/src/composition-root.ts
+  - packs/firebase-auth/template/src/app.ts
+  - packs/firebase-auth/template/src/server.ts
+  - packs/firebase-auth/template/src/plugins/index.ts
+  - packs/firebase-auth/template/src/routes/index.ts
+  risk: medium
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-024
+  name: Dockerfile and docker-compose
+  description: 'Create a multi-stage Dockerfile using distroless Node.js base image
+    for production, a docker-compose.yml for local development with environment variables,
+    and a .dockerignore to exclude unnecessary files from the build context.
+
+    '
+  deps:
+  - T-023
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/Dockerfile
+  - packs/firebase-auth/template/docker-compose.yml
+  - packs/firebase-auth/template/.dockerignore
+  acceptance_criteria:
+  - Dockerfile uses multi-stage build with a builder stage (node:22-slim) and production
+    stage (distroless Node.js image)
+  - Dockerfile installs production dependencies only in the final stage using pnpm
+  - Dockerfile sets NODE_ENV=production, exposes PORT 3000, and runs the compiled
+    server entry point
+  - Dockerfile uses a non-root user in the production stage
+  - docker-compose.yml defines the service with all environment variables from the
+    pack contract
+  - docker-compose.yml maps port 3000 and mounts secrets appropriately for local development
+  - .dockerignore excludes node_modules, .git, tests, docs, and other non-production
+    files
+  - '[PROD] Dockerfile includes HEALTHCHECK --interval=30s --timeout=3s CMD [curl
+    or wget to http://localhost:3000/health] matching the path registered in routes/health.ts'
+  - '[PROD] Dockerfile CMD references dist/server.js and this matches the main field
+    in package.json and the tsconfig outDir + server.ts source path'
+  - '[PROD] Dockerfile COPY includes pnpm-lock.yaml and runs pnpm install --frozen-lockfile
+    in both builder and production stages. Base images use a pinned tag (node:22.x-slim,
+    not node:22-slim)'
+  checks:
+  - docker_build
+  allowed_paths:
+  - packs/firebase-auth/template/Dockerfile
+  - packs/firebase-auth/template/docker-compose.yml
+  - packs/firebase-auth/template/.dockerignore
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-025
+  name: Unit tests for domain and infrastructure
+  description: 'Write unit tests for the domain and infrastructure layers. Tests cover
+    config loading and validation (all env vars, defaults, fail-fast), all validator
+    functions with valid/invalid inputs and edge cases, Firebase adapter initialization
+    and method delegation, and type exports.
+
+    '
+  deps:
+  - T-004
+  - T-005
+  - T-006
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/tests/unit/config.test.ts
+  - packs/firebase-auth/template/tests/unit/validators.test.ts
+  - packs/firebase-auth/template/tests/unit/firebase-adapter.test.ts
+  - packs/firebase-auth/template/tests/unit/types.test.ts
+  acceptance_criteria:
+  - config.test.ts tests successful loading with all required env vars present
+  - config.test.ts tests fail-fast behavior when FIREBASE_SERVICE_ACCOUNT_JSON or
+    API_KEYS is missing
+  - config.test.ts tests default values for all optional env vars (PORT, LOG_LEVEL,
+    RATE_LIMIT_READ, RATE_LIMIT_MUTATION, RATE_LIMIT_BATCH, SESSION_COOKIE_MAX_AGE,
+    SHUTDOWN_TIMEOUT, NODE_ENV)
+  - config.test.ts tests API key parsing into Map with sha256 prefix IDs
+  - validators.test.ts tests each validator with valid inputs, invalid inputs, and
+    edge cases (empty strings, boundary values)
+  - firebase-adapter.test.ts tests SDK initialization and health probe behavior using
+    mocked firebase-admin
+  - firebase-adapter.test.ts tests that isHealthy() returns correct boolean status
+  - types.test.ts verifies key type exports are importable and structurally correct
+  checks:
+  - lint
+  - typecheck
+  - unit_test
+  allowed_paths:
+  - packs/firebase-auth/template/tests/unit/config.test.ts
+  - packs/firebase-auth/template/tests/unit/validators.test.ts
+  - packs/firebase-auth/template/tests/unit/firebase-adapter.test.ts
+  - packs/firebase-auth/template/tests/unit/types.test.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-026
+  name: Unit tests for plugins
+  description: 'Write unit tests for all Fastify plugins. Tests cover API key auth
+    (constant-time comparison, skip paths, 401 responses), rate limiting (bucket consumption,
+    429 with Retry-After, multi-class), request context (ID propagation/generation),
+    audit logging, error mapping, and log redaction.
+
+    '
+  deps:
+  - T-007
+  - T-008
+  - T-009
+  - T-011
+  - T-012
+  - T-013
+  - T-025
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/tests/unit/api-key-auth.test.ts
+  - packs/firebase-auth/template/tests/unit/rate-limiter.test.ts
+  - packs/firebase-auth/template/tests/unit/request-context.test.ts
+  - packs/firebase-auth/template/tests/unit/audit-logger.test.ts
+  - packs/firebase-auth/template/tests/unit/error-handler.test.ts
+  - packs/firebase-auth/template/tests/unit/log-redactor.test.ts
+  acceptance_criteria:
+  - api-key-auth.test.ts tests successful auth with valid key, 401 on invalid/missing
+    key, skip for /health and /metrics, and request.apiKeyId decoration
+  - rate-limiter.test.ts tests bucket consumption, 429 response with Retry-After header,
+    multi-class consumption, and configurable limits
+  - request-context.test.ts tests X-Request-ID propagation from header, UUIDv4 generation
+    when absent, and response header setting
+  - audit-logger.test.ts tests emitAudit writes structured JSON with correct fields
+    and no PII values
+  - error-handler.test.ts tests Firebase error code to HTTP status mapping for all
+    documented codes and standard error response shape
+  - log-redactor.test.ts tests redactEmail and redactUid helpers with valid, malformed,
+    and adversarial inputs
+  checks:
+  - lint
+  - typecheck
+  - unit_test
+  allowed_paths:
+  - packs/firebase-auth/template/tests/unit/api-key-auth.test.ts
+  - packs/firebase-auth/template/tests/unit/rate-limiter.test.ts
+  - packs/firebase-auth/template/tests/unit/request-context.test.ts
+  - packs/firebase-auth/template/tests/unit/audit-logger.test.ts
+  - packs/firebase-auth/template/tests/unit/error-handler.test.ts
+  - packs/firebase-auth/template/tests/unit/log-redactor.test.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-027
+  name: Unit tests for routes group A
+  description: 'Write unit tests for route group A: health, token verification, user
+    lookup, user management, and custom claims. Tests use mocked Firebase adapter
+    to verify request validation, response shapes, error handling, and audit event
+    emission.
+
+    '
+  deps:
+  - T-014
+  - T-015
+  - T-016
+  - T-017
+  - T-018
+  - T-025
+  - T-026
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/tests/unit/health.test.ts
+  - packs/firebase-auth/template/tests/unit/verify.test.ts
+  - packs/firebase-auth/template/tests/unit/users-lookup.test.ts
+  - packs/firebase-auth/template/tests/unit/users-management.test.ts
+  - packs/firebase-auth/template/tests/unit/claims.test.ts
+  acceptance_criteria:
+  - health.test.ts tests 200 response with correct shape and both connected/error
+    Firebase status
+  - verify.test.ts tests single token verification with valid/invalid/expired tokens
+    and batch verification with size limits and per-token results
+  - users-lookup.test.ts tests lookup by UID, email, phone, and batch with valid/invalid
+    inputs and 404 handling
+  - users-management.test.ts tests create, update, delete, disable, and enable operations
+    with input validation, audit event emission, and 409 on conflicts
+  - claims.test.ts tests set claims with size validation (1000 char limit), reserved
+    claims rejection, delete claims using null, and audit events
+  - All route tests verify the standard error response envelope shape on failures
+  checks:
+  - lint
+  - typecheck
+  - unit_test
+  allowed_paths:
+  - packs/firebase-auth/template/tests/unit/health.test.ts
+  - packs/firebase-auth/template/tests/unit/verify.test.ts
+  - packs/firebase-auth/template/tests/unit/users-lookup.test.ts
+  - packs/firebase-auth/template/tests/unit/users-management.test.ts
+  - packs/firebase-auth/template/tests/unit/claims.test.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-028
+  name: Unit tests for routes group B and metrics
+  description: 'Write unit tests for route group B (sessions, tokens, email actions,
+    batch operations) and the metrics plugin. Tests use mocked Firebase adapter to
+    verify validation, response shapes, and audit events. Metrics tests verify counter/histogram
+    registration and the /metrics endpoint.
+
+    '
+  deps:
+  - T-010
+  - T-019
+  - T-020
+  - T-021
+  - T-022
+  - T-025
+  - T-026
+  - T-027
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/tests/unit/sessions.test.ts
+  - packs/firebase-auth/template/tests/unit/tokens.test.ts
+  - packs/firebase-auth/template/tests/unit/email-actions.test.ts
+  - packs/firebase-auth/template/tests/unit/batch-operations.test.ts
+  - packs/firebase-auth/template/tests/unit/metrics.test.ts
+  acceptance_criteria:
+  - sessions.test.ts tests session cookie creation with valid/invalid duration range
+    and session verification with/without checkRevoked
+  - tokens.test.ts tests custom token minting with claims size validation and refresh
+    token revocation with audit events
+  - email-actions.test.ts tests all three email action endpoints with email validation
+    and actionCodeSettings requirements for sign-in
+  - batch-operations.test.ts tests batch delete with size limits (max 1000), success/failure
+    counts, and paginated user listing with maxResults and pageToken
+  - metrics.test.ts tests that all Prometheus metrics are registered (http_requests_total,
+    http_request_duration_seconds, firebase_admin_calls_total, firebase_admin_call_duration_seconds,
+    rate_limit_exceeded_total, active_connections)
+  - metrics.test.ts tests GET /metrics returns Prometheus text format
+  checks:
+  - lint
+  - typecheck
+  - unit_test
+  allowed_paths:
+  - packs/firebase-auth/template/tests/unit/sessions.test.ts
+  - packs/firebase-auth/template/tests/unit/tokens.test.ts
+  - packs/firebase-auth/template/tests/unit/email-actions.test.ts
+  - packs/firebase-auth/template/tests/unit/batch-operations.test.ts
+  - packs/firebase-auth/template/tests/unit/metrics.test.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-029
+  name: Integration tests
+  description: 'Write integration tests that exercise the fully wired Fastify application
+    with a mocked Firebase adapter. Tests verify cross-cutting concerns compose correctly:
+    auth middleware blocks unauthenticated requests, rate limiting applies across
+    routes, errors map correctly through the stack, and audit events emit for mutation
+    flows.
+
+    '
+  deps:
+  - T-023
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/tests/integration/auth-middleware.test.ts
+  - packs/firebase-auth/template/tests/integration/rate-limiting.test.ts
+  - packs/firebase-auth/template/tests/integration/error-handling.test.ts
+  - packs/firebase-auth/template/tests/integration/user-flows.test.ts
+  - packs/firebase-auth/template/tests/integration/token-flows.test.ts
+  - packs/firebase-auth/template/tests/integration/audit-logging.test.ts
+  acceptance_criteria:
+  - auth-middleware.test.ts tests that unauthenticated requests to protected routes
+    return 401 and /health and /metrics are accessible without auth
+  - rate-limiting.test.ts tests that exceeding configured limits returns 429 with
+    Retry-After and that different rate classes are tracked independently
+  - error-handling.test.ts tests that Firebase SDK errors propagate through the error
+    handler to correct HTTP status codes with standard envelope
+  - user-flows.test.ts tests end-to-end user CRUD flow (create, read, update, disable,
+    enable, delete) through the wired app
+  - token-flows.test.ts tests token verification, custom token minting, session cookie
+    creation and verification flows
+  - audit-logging.test.ts tests that mutation operations emit structured audit log
+    entries with correct fields
+  - All integration tests use the fully composed app from buildApp() with mocked Firebase
+    adapter
+  checks:
+  - lint
+  - typecheck
+  - integration_test
+  allowed_paths:
+  - packs/firebase-auth/template/tests/integration/auth-middleware.test.ts
+  - packs/firebase-auth/template/tests/integration/rate-limiting.test.ts
+  - packs/firebase-auth/template/tests/integration/error-handling.test.ts
+  - packs/firebase-auth/template/tests/integration/user-flows.test.ts
+  - packs/firebase-auth/template/tests/integration/token-flows.test.ts
+  - packs/firebase-auth/template/tests/integration/audit-logging.test.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-030
+  name: Smoke test against built container
+  description: 'Write a smoke test that builds the Docker image, runs the container
+    with mock environment variables, and verifies the service starts and responds
+    to HTTP requests. Tests the health endpoint and basic authentication flow against
+    the running container.
+
+    '
+  deps:
+  - T-024
+  - T-002
+  inputs: []
+  outputs:
+  - packs/firebase-auth/template/tests/smoke/smoke.test.ts
+  acceptance_criteria:
+  - smoke.test.ts builds the Docker image from the Dockerfile
+  - smoke.test.ts starts the container with required environment variables (mock FIREBASE_SERVICE_ACCOUNT_JSON,
+    API_KEYS, PORT)
+  - smoke.test.ts verifies GET /health returns 200 with expected response shape
+  - smoke.test.ts verifies unauthenticated requests to protected endpoints return
+    401
+  - smoke.test.ts verifies GET /metrics returns 200 with Prometheus text format
+  - smoke.test.ts cleans up the container after tests complete (even on failure)
+  - smoke.test.ts has a reasonable timeout for container startup (30 seconds or less)
+  - '[OPUS] Add criterion - smoke test sets FIREBASE_AUTH_EMULATOR_HOST env var to
+    use the Firebase Auth Emulator or server.ts accepts a SKIP_FIREBASE_HEALTH_PROBE
+    flag for container-level smoke testing'
+  checks:
+  - docker_smoke
+  allowed_paths:
+  - packs/firebase-auth/template/tests/smoke/smoke.test.ts
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: false
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-031
+  name: Add CORS configuration to app bootstrap
+  description: If CORS_ORIGIN is set in config, register @fastify/cors with the configured
+    origin in buildApp(). Add @fastify/cors to package.json production dependencies.
+    When CORS_ORIGIN is unset, skip CORS registration (internal-only service).
+  deps:
+  - T-004
+  - T-023
+  inputs: []
+  outputs: []
+  acceptance_criteria:
+  - '[OPUS] When CORS_ORIGIN is set buildApp registers fastify-cors with that origin
+    and preflight OPTIONS requests return the correct Access-Control-Allow-Origin
+    header. When CORS_ORIGIN is unset no CORS headers are added. fastify-cors is listed
+    in package.json production dependencies.'
+  checks:
+  - typecheck
+  - lint
+  allowed_paths: []
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: true
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-032
+  name: Add shutdown method to FirebaseAdapter
+  description: Add a close() or shutdown() method to the FirebaseAdapter interface
+    in domain/types.ts and implement it in firebase-adapter.ts by calling firebase
+    app.delete(). T-023 SIGTERM handler calls this method.
+  deps:
+  - T-003
+  - T-006
+  inputs: []
+  outputs: []
+  acceptance_criteria:
+  - '[BARREL] Verify this module is imported and registered in the barrel file (routes/index.ts
+    or plugins/index.ts)'
+  - '[OPUS] FirebaseAdapter.shutdown() calls app.delete() on the underlying Firebase
+    Admin app instance. server.ts SIGTERM handler invokes adapter.shutdown() before
+    exiting. shutdown() is safe to call multiple times without throwing.'
+  checks:
+  - typecheck
+  - lint
+  allowed_paths: []
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: true
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-033
+  name: Add rate-limit class metadata to route acceptance criteria
+  description: Each route task should declare its rate limit classes via Fastify route
+    config. E.g., POST /verify = [read], POST /users = [mutation], POST /batch-verify
+    = [read, batch], POST /users/batch-delete = [mutation, batch]. Add as acceptance
+    criteria to T-015 through T-022.
+  deps: []
+  inputs: []
+  outputs: []
+  acceptance_criteria:
+  - '[BARREL] Verify this module is imported and registered in the barrel file (routes/index.ts
+    or plugins/index.ts)'
+  - '[OPUS] Each route sets rateLimitClasses in Fastify route-level config. POST /verify
+    and all GET lookup endpoints declare read class. POST /users and PATCH and DELETE
+    mutation endpoints declare mutation class. POST /batch-verify and POST /users/batch
+    and POST /users/batch-delete and GET /users list declare batch class in addition
+    to their primary class.'
+  checks:
+  - typecheck
+  - lint
+  allowed_paths: []
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: true
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-034
+  name: Document /metrics exposure risk
+  description: "Add acceptance criterion to T-010 or T-011 acknowledging that /metrics\
+    \ is intentionally unauthenticated for Prometheus scraping, and that operators\
+    \ should restrict access via Cloud Run ingress settings or network policy. Not\
+    \ a code change \u2014 an explicit acceptance of the risk."
+  deps: []
+  inputs: []
+  outputs: []
+  acceptance_criteria: []
+  checks:
+  - typecheck
+  - lint
+  allowed_paths: []
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: true
+  domain_tags: []
+  doc_packets: []
+  roles: []
+- id: T-035
+  name: Correct architecture claims description
+  description: Update the routes/claims architecture component description to say
+    'sets claims to null' instead of 'sets claims to {}' to match ADR-009 PRD-FIX
+    and T-018 acceptance criteria.
+  deps: []
+  inputs: []
+  outputs: []
+  acceptance_criteria:
+  - '[BARREL] Verify this module is imported and registered in the barrel file (routes/index.ts
+    or plugins/index.ts)'
+  - '[OPUS] Architecture component description for routes/claims is updated from sets
+    claims to empty-object to sets claims to null matching ADR-009 PRD-FIX and T-018
+    acceptance criteria'
+  checks:
+  - typecheck
+  - lint
+  allowed_paths: []
+  risk: low
+  requires_approval: false
+  status: todo
+  capability_ids: []
+  injected_by_review: true
+  domain_tags: []
+  doc_packets: []
+  roles: []
+plan_source: claude
+

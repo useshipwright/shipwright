@@ -1,0 +1,27 @@
+stack: node
+framework: fastify
+package_manager: pnpm
+runner: npm
+test_framework: vitest
+lint: eslint
+format: prettier
+local_env: docker_compose
+project_type: pack
+pack_id: firebase-auth
+policy:
+  script_sprawl: P1
+risk:
+  requires_approval:
+    - auth
+    - deploy
+coding_standards:
+  clean_architecture: true
+mcp_servers:
+  google-developer-knowledge:
+    url: "https://developerknowledge.googleapis.com/mcp"
+    headers:
+      X-Goog-Api-Key: "${GOOGLE_DEV_KNOWLEDGE_API_KEY}"
+  context7:
+    url: "https://mcp.context7.com/mcp"
+    headers:
+      Authorization: "Bearer ${CONTEXT7_API_KEY}"

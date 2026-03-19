@@ -4,8 +4,20 @@ import { useEffect, useState } from 'react';
 
 interface HealthData {
   status: string;
+  firebase?: string;
   firebase_initialized?: boolean;
+  version?: string;
+  uptime?: number;
   uptime_seconds?: number;
+}
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 export function HealthIndicator() {
@@ -51,7 +63,8 @@ export function HealthIndicator() {
   }
 
   const isHealthy = health.status === 'ok';
-  const firebaseOk = health.firebase_initialized;
+  const firebaseOk = health.firebase === 'connected' || health.firebase_initialized;
+  const uptimeVal = health.uptime ?? health.uptime_seconds;
 
   return (
     <div className="px-4 py-3 bg-gray-900 border border-gray-800 rounded space-y-2">
@@ -62,17 +75,20 @@ export function HealthIndicator() {
         <span className="text-sm">
           {isHealthy ? 'Healthy' : health.status}
         </span>
+        {health.version && (
+          <span className="text-xs text-gray-500 ml-auto">{health.version}</span>
+        )}
       </div>
       <div className="grid grid-cols-2 gap-4 text-xs text-gray-400">
         <div>
           Firebase:{' '}
           <span className={firebaseOk ? 'text-green-400' : 'text-red-400'}>
-            {firebaseOk ? 'initialized' : 'not initialized'}
+            {firebaseOk ? 'connected' : 'disconnected'}
           </span>
         </div>
-        {health.uptime_seconds != null && (
+        {uptimeVal != null && (
           <div>
-            Uptime: {Math.floor(health.uptime_seconds)}s
+            Uptime: {formatUptime(uptimeVal)}
           </div>
         )}
       </div>

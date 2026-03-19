@@ -1,0 +1,22 @@
+services:
+  firebase-auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      API_KEYS: ${API_KEYS}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON}
+      RATE_LIMIT_READ: "200"
+      RATE_LIMIT_MUTATION: "50"
+      RATE_LIMIT_BATCH: "20"
+      SESSION_COOKIE_MAX_AGE: "1209600000"
+      SHUTDOWN_TIMEOUT: "10000"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+    restart: unless-stopped

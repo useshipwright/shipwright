@@ -7,7 +7,7 @@ export async function GET(
 ) {
   try {
     const { uid } = await params;
-    const res = await callService(`/user-lookup/${encodeURIComponent(uid)}`);
+    const res = await callService(`/users/${encodeURIComponent(uid)}`);
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {

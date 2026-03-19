@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { signOut } from 'firebase/auth';
 import { useAuth } from '@/lib/auth-context';
 import { getFirebaseAuth } from '@/lib/firebase';
+import { NavTabs } from '@/components/nav-tabs';
 
 export default function DashboardLayout({
   children,
@@ -43,6 +44,7 @@ export default function DashboardLayout({
           Sign out
         </button>
       </div>
+      <NavTabs />
       {children}
     </div>
   );

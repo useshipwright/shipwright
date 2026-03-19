@@ -1,117 +1,110 @@
 # Firebase Auth Verification Service
 
-[![CI](https://github.com/CleerConsulting/firebase-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/CleerConsulting/firebase-auth/actions/workflows/ci.yml)
+A production-ready Firebase Authentication verification and user management API built on Fastify.
 
-A hardened Firebase Auth token verification microservice built with Fastify and TypeScript. Built and verified by [Shipwright](https://shipwright.build).
+## Getting Started
 
-## Quick Start
+### Prerequisites
 
-No Firebase credentials needed. The emulator handles everything.
+- Node.js 22.x
+- pnpm
 
-```bash
-docker compose up -d --build
-bash scripts/smoke-test.sh
-```
-
-The smoke test creates a user via the Firebase Auth Emulator, then verifies all endpoints with real tokens.
-
-## Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check with Firebase init status |
-| `POST` | `/verify` | Verify a single Firebase ID token |
-| `POST` | `/batch-verify` | Verify up to 25 tokens concurrently |
-| `GET` | `/user-lookup/:uid` | Look up user profile by UID |
-| `GET` | `/metrics` | Prometheus metrics |
-
-### POST /verify
-
-```json
-{ "token": "<firebase-id-token>", "check_revoked": false }
-```
-
-Returns decoded claims (uid, email, custom_claims, token_metadata) on success. 401 on invalid token.
-
-### POST /batch-verify
-
-```json
-{ "tokens": ["<token1>", "<token2>"], "check_revoked": false }
-```
-
-Returns per-token results with a summary. Individual failures are reported per-result, not as HTTP errors. Error categories: `expired`, `revoked`, `malformed`, `invalid`.
-
-### GET /user-lookup/:uid
-
-Returns allowlisted user profile fields. Sensitive fields (passwordHash, passwordSalt) are never exposed.
-
-## Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8080` | Server listen port |
-| `NODE_ENV` | `development` | Environment (`production`, `development`, `test`) |
-| `LOG_LEVEL` | `info` | Pino log level (`debug`, `info`, `warn`, `error`) |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | — | Service account JSON key (option 1) |
-| `FIREBASE_USE_ADC` | `false` | Use Application Default Credentials (option 2) |
-| `FIREBASE_AUTH_EMULATOR_HOST` | — | Firebase Auth Emulator host:port |
-| `CORS_ORIGIN` | `true` (allow all) | Allowed CORS origin(s) |
-| `BATCH_RATE_LIMIT_MAX` | `100` | Max batch-verify requests per window |
-| `BATCH_RATE_LIMIT_WINDOW` | `1 minute` | Rate limit window (Fastify duration string) |
-
-## Running Tests
+### Install
 
 ```bash
 pnpm install
-pnpm test          # 352 unit tests (mocked Firebase)
-pnpm test:coverage # with coverage report
 ```
 
-## Production Deployment
+### Configuration
 
-For production use with real Firebase credentials:
+Copy `.env.example` to `.env` and fill in required values:
 
 ```bash
-# Option 1: Service account JSON key
-docker run -e FIREBASE_SERVICE_ACCOUNT_JSON='<json>' -p 8080:8080 firebase-auth
-
-# Option 2: Application Default Credentials (Cloud Run with Workload Identity)
-docker run -e FIREBASE_USE_ADC=true -p 8080:8080 firebase-auth
+cp .env.example .env
 ```
 
-See `scripts/deploy.sh` for the full GCP deployment pipeline (Cloud Build, digest pinning, IAM, vulnerability scanning).
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Yes | -- | Firebase service account JSON |
+| `API_KEYS` | Yes | -- | Comma-separated API keys for authentication |
+| `PORT` | No | `8080` | Server port |
+| `NODE_ENV` | No | `production` | Environment |
+| `LOG_LEVEL` | No | `info` | Pino log level |
+| `CORS_ORIGIN` | No | Disabled | Allowed CORS origin |
+| `RATE_LIMIT_READ` | No | `200` | Read requests/min per API key |
+| `RATE_LIMIT_MUTATION` | No | `50` | Mutation requests/min per API key |
+| `RATE_LIMIT_BATCH` | No | `20` | Batch requests/min per API key |
+| `SESSION_COOKIE_MAX_AGE` | No | `1209600000` | Session cookie max age (ms) |
+| `SHUTDOWN_TIMEOUT` | No | `10000` | Graceful shutdown timeout (ms) |
 
-## Security
+### Development
 
-- **Helmet**: X-Content-Type-Options, X-Frame-Options, CSP, and other security headers via `@fastify/helmet`
-- **CORS**: Configurable origin via `CORS_ORIGIN` env var, defaults to allow-all for development
-- **Audit logging**: Structured `audit_log` entries on every response (excludes health/metrics). 500+ errors logged at error level, 401/403 at warn
-- **Rate limiting**: Batch endpoint rate-limited via `@fastify/rate-limit` (in-memory LRU)
-- **Timing normalization**: Error responses are time-normalized to prevent token validity inference (ADR-010)
-- **Log redaction**: UIDs truncated, JWTs/credentials/PEM keys scrubbed from all log output (ADR-007)
+```bash
+pnpm run dev
+```
 
-## Observability
+### Build
 
-- **Prometheus metrics**: `GET /metrics` exposes `http_request_duration_seconds` histogram and Node.js default metrics
-- **Structured JSON logs**: GCP Cloud Logging compatible via `@google-cloud/pino-logging-gcp-config`
-- **Correlation IDs**: Every request gets an `X-Request-ID` header for distributed tracing
+```bash
+pnpm run build
+pnpm start
+```
 
-## CI
+## API Endpoints
 
-GitHub Actions runs lint, test, and build on every push and PR to main/master.
+### Public
+
+- `GET /health` -- Health check with Firebase connectivity status
+- `GET /metrics` -- Prometheus metrics (unauthenticated, restrict in production)
+
+### Authenticated (require `X-API-Key` header)
+
+- `POST /verify` -- Verify a Firebase ID token
+- `POST /batch-verify` -- Verify multiple tokens (max 25)
+- `GET /users/:uid` -- Look up user by UID
+- `GET /users/email/:email` -- Look up user by email
+- `GET /users/phone/:phone` -- Look up user by phone
+- `POST /users/batch` -- Batch user lookup
+- `GET /users` -- List users with pagination
+- `POST /users` -- Create user
+- `PUT /users/:uid` -- Update user
+- `DELETE /users/:uid` -- Delete user
+- `POST /users/batch-delete` -- Batch delete (max 1000)
+- `PUT /users/:uid/claims` -- Set custom claims
+- `DELETE /users/:uid/claims` -- Clear custom claims
+- `POST /sessions` -- Create session cookie
+- `POST /sessions/verify` -- Verify session cookie
+- `POST /tokens/custom` -- Mint custom token
+- `POST /users/:uid/revoke` -- Revoke refresh tokens
+- `POST /email-actions/password-reset` -- Send password reset link
+- `POST /email-actions/verify-email` -- Send email verification link
+- `POST /email-actions/sign-in` -- Send sign-in link
+
+## Testing
+
+```bash
+pnpm test              # run tests
+pnpm run test:watch    # watch mode
+pnpm run test:coverage # with coverage
+```
+
+## Docker
+
+```bash
+docker build -t firebase-auth .
+docker run -p 8080:8080 --env-file .env firebase-auth
+```
+
+Or with Docker Compose:
+
+```bash
+docker compose up -d --build
+```
 
 ## Architecture
 
-- **Adapter pattern**: Single Firebase Admin SDK import point. All other modules use the adapter (ADR-001).
-- **Fail-fast config**: Missing credentials crash the container at startup, not at first request (ADR-004).
-- **Dual credential modes**: SA JSON key or Application Default Credentials via Workload Identity Federation (ADR-019).
-- **Graceful shutdown**: SIGTERM/SIGINT handlers drain connections with a 10s force-exit timeout.
-- **Version pinning**: All dependencies pinned to exact versions (no carets).
+Plugins are registered in ADR-005 order: log-redactor, request-context, metrics, api-key-auth, rate-limiter, error-handler, audit-logger. Routes are registered last, after all plugins.
 
-## Architecture Decision Records
+The Firebase Admin SDK is isolated behind an adapter interface (`src/infra/firebase-adapter.ts`) per ADR-001. All route handlers depend on the adapter interface, not the SDK directly.
 
-23 ADRs document every design choice. See the `decisions/` directory (one level up from this service).
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+API key authentication uses constant-time comparison via `crypto.timingSafeEqual`. Key identity is derived as `sha256(key).slice(0, 8)` per ADR-003.

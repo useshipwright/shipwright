@@ -21,15 +21,15 @@ interface VerifyResult {
 interface UserLookupResult {
   uid: string;
   email: string | null;
-  email_verified: boolean;
-  display_name: string | null;
-  photo_url: string | null;
+  emailVerified: boolean;
+  displayName: string | null;
+  photoURL: string | null;
   disabled: boolean;
   metadata?: {
-    creation_time: string;
-    last_sign_in_time: string;
+    creationTime: string;
+    lastSignInTime: string;
   };
-  provider_data?: Array<{ provider_id: string; uid: string }>;
+  providerData?: Array<{ providerId: string; uid: string }>;
 }
 
 export function UserProfile({
@@ -156,11 +156,11 @@ export function UserProfile({
             <dt className="text-gray-400">Email</dt>
             <dd>{lookupResult.email || '-'}</dd>
             <dt className="text-gray-400">Email Verified</dt>
-            <dd>{lookupResult.email_verified ? 'Yes' : 'No'}</dd>
-            {lookupResult.display_name && (
+            <dd>{lookupResult.emailVerified ? 'Yes' : 'No'}</dd>
+            {lookupResult.displayName && (
               <>
                 <dt className="text-gray-400">Display Name</dt>
-                <dd>{lookupResult.display_name}</dd>
+                <dd>{lookupResult.displayName}</dd>
               </>
             )}
             <dt className="text-gray-400">Disabled</dt>
@@ -168,22 +168,22 @@ export function UserProfile({
             {lookupResult.metadata && (
               <>
                 <dt className="text-gray-400">Created</dt>
-                <dd>{lookupResult.metadata.creation_time}</dd>
+                <dd>{lookupResult.metadata.creationTime}</dd>
                 <dt className="text-gray-400">Last Sign In</dt>
-                <dd>{lookupResult.metadata.last_sign_in_time}</dd>
+                <dd>{lookupResult.metadata.lastSignInTime}</dd>
               </>
             )}
           </dl>
-          {lookupResult.provider_data && lookupResult.provider_data.length > 0 && (
+          {lookupResult.providerData && lookupResult.providerData.length > 0 && (
             <div>
               <h4 className="text-xs text-gray-400 mb-1">Providers</h4>
               <div className="flex gap-2">
-                {lookupResult.provider_data.map((p) => (
+                {lookupResult.providerData.map((p) => (
                   <span
-                    key={p.provider_id}
+                    key={p.providerId}
                     className="text-xs px-2 py-0.5 bg-gray-800 rounded"
                   >
-                    {p.provider_id}
+                    {p.providerId}
                   </span>
                 ))}
               </div>

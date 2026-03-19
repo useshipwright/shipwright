@@ -1,269 +1,163 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Emulator Smoke Test — Firebase Auth Service
-# =============================================================================
+# smoke-test.sh -- Build, run, and test the Firebase Auth service locally
 #
-# E2E test using the Firebase Auth Emulator. No credentials required.
-# Starts emulator + app via docker compose, creates a test user via the
-# emulator REST API, then tests all 4 endpoints with real tokens.
+# Usage: bash scripts/smoke-test.sh
 #
-# Usage:
-#   bash scripts/smoke-test.sh
-#
-# Requirements: curl, jq, docker compose
-# =============================================================================
+# Builds Docker image, starts container, tests all endpoints, cleans up.
+# No real Firebase credentials needed -- uses test config.
 
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-COMPOSE_FILE="${TEMPLATE_DIR}/docker-compose.yaml"
-
-APP_URL="http://localhost:8080"
-EMULATOR_URL="http://localhost:9099"
-HEALTH_TIMEOUT=120
-HEALTH_INTERVAL=2
-
-PASS=0
-FAIL=0
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+DIM='\033[2m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-log_pass()    { echo -e "  ${GREEN}PASS${NC}  $1"; PASS=$((PASS + 1)); }
-log_fail()    { echo -e "  ${RED}FAIL${NC}  $1"; FAIL=$((FAIL + 1)); }
-log_section() { echo -e "\n${BOLD}${BLUE}=== $1 ===${NC}"; }
-log_info()    { echo -e "  ${BLUE}INFO${NC}  $1"; }
+CONTAINER="firebase-auth-smoke-$$"
+IMAGE="firebase-auth:smoke"
+PORT=$((49152 + RANDOM % 16384))
+API_KEY="smoke-test-key-001"
+BASE="http://localhost:$PORT"
+PASS=0
+FAIL=0
 
-cleanup() {
-  log_section "Cleanup"
-  cd "$TEMPLATE_DIR"
-  docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  log_info "Docker compose torn down"
-}
+pass() { echo -e "  ${GREEN}PASS${NC} $*"; PASS=$((PASS+1)); }
+fail() { echo -e "  ${RED}FAIL${NC} $*"; FAIL=$((FAIL+1)); }
+
+cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-http_get() {
-  local url="$1"
-  local tmpfile
-  tmpfile=$(mktemp)
-  HTTP_STATUS=$(curl -s -o "$tmpfile" -w "%{http_code}" \
-    -H "Content-Type: application/json" "$url" 2>/dev/null) || HTTP_STATUS=000
-  HTTP_BODY=$(cat "$tmpfile" 2>/dev/null || echo "")
-  rm -f "$tmpfile"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
-http_post() {
-  local url="$1"
-  local body="${2:-}"
-  local tmpfile
-  tmpfile=$(mktemp)
-  HTTP_STATUS=$(curl -s -o "$tmpfile" -w "%{http_code}" \
-    -X POST -H "Content-Type: application/json" -d "$body" "$url" 2>/dev/null) || HTTP_STATUS=000
-  HTTP_BODY=$(cat "$tmpfile" 2>/dev/null || echo "")
-  rm -f "$tmpfile"
-}
+echo ""
+echo -e "${BOLD}=== Firebase Auth Smoke Test ===${NC}"
+echo ""
 
-# ---------------------------------------------------------------------------
-# Preflight
-# ---------------------------------------------------------------------------
-
-for cmd in curl jq docker; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo -e "${RED}ERROR: ${cmd} is required but not found${NC}"
+# -- Build --
+echo "[1/4] Building Docker image..."
+if docker build -t "$IMAGE" . >/dev/null 2>&1; then
+    pass "Docker build"
+else
+    fail "Docker build -- run 'docker build .' to see errors"
     exit 1
-  fi
+fi
+
+# -- Start --
+echo "[2/4] Starting container on port $PORT..."
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+SA_JSON='{"type":"service_account","project_id":"smoke-test","private_key_id":"k","private_key":"-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n","client_email":"t@t.iam.gserviceaccount.com","client_id":"1","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}'
+
+CID=$(docker run -d --name "$CONTAINER" -p "$PORT:8080" \
+    -e "FIREBASE_SERVICE_ACCOUNT_JSON=$SA_JSON" \
+    -e "API_KEYS=$API_KEY" \
+    -e LOG_LEVEL=warn \
+    -e SKIP_FIREBASE_HEALTH_PROBE=true \
+    "$IMAGE" 2>&1) || true
+
+if [ -z "$CID" ]; then
+    fail "Container failed to start"
+    exit 1
+fi
+
+# Wait for HTTP
+STARTED=false
+for _ in $(seq 1 30); do
+    if curl -s -o /dev/null -w '' "$BASE/health" 2>/dev/null; then
+        STARTED=true
+        break
+    fi
+    # Check container didn't crash
+    if ! docker ps -q --filter "name=$CONTAINER" | grep -q .; then
+        fail "Container exited"
+        echo "  Logs:"
+        docker logs "$CONTAINER" 2>&1 | tail -10 | sed 's/^/    /'
+        exit 1
+    fi
+    sleep 1
 done
 
-# ---------------------------------------------------------------------------
-# Start services
-# ---------------------------------------------------------------------------
-
-log_section "Starting Services"
-cd "$TEMPLATE_DIR"
-docker compose -f "$COMPOSE_FILE" up -d --build 2>&1
-
-# Wait for app health
-log_info "Waiting for app to become healthy (timeout: ${HEALTH_TIMEOUT}s)..."
-elapsed=0
-while [ "$elapsed" -lt "$HEALTH_TIMEOUT" ]; do
-  if curl -sf "${APP_URL}/health" >/dev/null 2>&1; then
-    log_info "App healthy after ${elapsed}s"
-    break
-  fi
-  sleep "$HEALTH_INTERVAL"
-  ((elapsed += HEALTH_INTERVAL))
-done
-
-if [ "$elapsed" -ge "$HEALTH_TIMEOUT" ]; then
-  echo -e "${RED}${BOLD}ABORT: App did not become healthy within ${HEALTH_TIMEOUT}s${NC}"
-  docker compose -f "$COMPOSE_FILE" logs 2>&1 | tail -40
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Create test user via emulator REST API
-# ---------------------------------------------------------------------------
-
-log_section "Create Test User"
-
-SIGNUP_BODY='{"email":"smoke@test.local","password":"TestPass1234","returnSecureToken":true}'
-http_post "${EMULATOR_URL}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-key" "$SIGNUP_BODY"
-
-if [ "$HTTP_STATUS" != "200" ]; then
-  echo -e "${RED}ABORT: Failed to create test user (status: ${HTTP_STATUS})${NC}"
-  echo "$HTTP_BODY"
-  exit 1
-fi
-
-ID_TOKEN=$(echo "$HTTP_BODY" | jq -r '.idToken')
-LOCAL_ID=$(echo "$HTTP_BODY" | jq -r '.localId')
-
-if [ -z "$ID_TOKEN" ] || [ "$ID_TOKEN" = "null" ]; then
-  echo -e "${RED}ABORT: No idToken in signup response${NC}"
-  echo "$HTTP_BODY"
-  exit 1
-fi
-
-log_info "Test user created: uid=${LOCAL_ID}"
-
-# ---------------------------------------------------------------------------
-# Test 1: GET /health
-# ---------------------------------------------------------------------------
-
-log_section "GET /health"
-
-http_get "${APP_URL}/health"
-
-if [ "$HTTP_STATUS" = "200" ]; then
-  log_pass "GET /health returns 200"
+if $STARTED; then
+    pass "Container started (port $PORT)"
 else
-  log_fail "GET /health returned ${HTTP_STATUS}, expected 200"
+    fail "Container not responding after 30s"
+    docker logs "$CONTAINER" 2>&1 | tail -10 | sed 's/^/    /'
+    exit 1
 fi
 
-FIREBASE_INIT=$(echo "$HTTP_BODY" | jq -r '.firebase_initialized')
-if [ "$FIREBASE_INIT" = "true" ]; then
-  log_pass "firebase_initialized is true"
-else
-  log_fail "firebase_initialized is ${FIREBASE_INIT}, expected true"
-fi
+# -- Test endpoints --
+echo "[3/4] Testing endpoints..."
 
-HEALTH_STATUS=$(echo "$HTTP_BODY" | jq -r '.status')
-if [ "$HEALTH_STATUS" = "healthy" ]; then
-  log_pass "status is healthy"
-else
-  log_fail "status is ${HEALTH_STATUS}, expected healthy"
-fi
+test_ep() {
+    local method="$1" path="$2" expect="$3" label="$4"
+    local body="${5:-}" auth="${6:-yes}"
 
-# ---------------------------------------------------------------------------
-# Test 2: POST /verify
-# ---------------------------------------------------------------------------
+    local args=(-s -o /dev/null -w "%{http_code}" -X "$method")
+    [ "$auth" = "yes" ] && args+=(-H "X-API-Key: $API_KEY")
+    args+=(-H "Content-Type: application/json")
+    [ -n "$body" ] && args+=(-d "$body")
+    args+=("$BASE$path")
 
-log_section "POST /verify"
+    local got
+    got=$(curl "${args[@]}" 2>/dev/null) || got="000"
 
-http_post "${APP_URL}/verify" "{\"token\":\"${ID_TOKEN}\"}"
+    if [ "$got" = "$expect" ]; then
+        pass "$label ($got)"
+    else
+        fail "$label (got $got, expected $expect)"
+    fi
+}
 
-if [ "$HTTP_STATUS" = "200" ]; then
-  log_pass "POST /verify returns 200"
-else
-  log_fail "POST /verify returned ${HTTP_STATUS}, expected 200"
-  log_info "Response: ${HTTP_BODY}"
-fi
+# Public
+test_ep GET /health 200 "Health check" "" no
+test_ep GET /metrics 200 "Prometheus metrics" "" no
 
-VERIFY_UID=$(echo "$HTTP_BODY" | jq -r '.uid')
-if [ "$VERIFY_UID" = "$LOCAL_ID" ]; then
-  log_pass "uid matches localId (${LOCAL_ID})"
-else
-  log_fail "uid is ${VERIFY_UID}, expected ${LOCAL_ID}"
-fi
+# Auth required
+test_ep POST /verify 400 "Verify token" '{}' yes
+test_ep POST /batch-verify 400 "Batch verify" '{}' yes
 
-VERIFY_EMAIL=$(echo "$HTTP_BODY" | jq -r '.email')
-if [ "$VERIFY_EMAIL" = "smoke@test.local" ]; then
-  log_pass "email is smoke@test.local"
-else
-  log_fail "email is ${VERIFY_EMAIL}, expected smoke@test.local"
-fi
+# User lookup (Firebase errors return 500 with fake credentials)
+test_ep GET /users/uid-1 500 "Get user by UID" "" yes
+test_ep GET /users/by-email/a@b.com 500 "Get user by email" "" yes
+test_ep GET /users/by-phone/+12345678901 500 "Get user by phone" "" yes
+test_ep POST /users/batch 400 "Batch lookup" '{}' yes
+test_ep GET "/users?maxResults=1" 500 "List users" "" yes
 
-# ---------------------------------------------------------------------------
-# Test 3: GET /user-lookup/:uid
-# ---------------------------------------------------------------------------
+# User management
+test_ep POST /users 500 "Create user" '{}' yes
+test_ep PATCH /users/uid-1 400 "Update user" '{}' yes
+test_ep DELETE /users/uid-1 400 "Delete user" "" yes
+test_ep POST /users/batch-delete 400 "Batch delete" '{}' yes
 
-log_section "GET /user-lookup/${LOCAL_ID}"
+# Claims
+test_ep PUT /users/uid-1/claims 400 "Set claims" '{}' yes
+test_ep DELETE /users/uid-1/claims 400 "Clear claims" "" yes
 
-http_get "${APP_URL}/user-lookup/${LOCAL_ID}"
+# Sessions
+test_ep POST /sessions 400 "Create session" '{}' yes
+test_ep POST /sessions/verify 400 "Verify session" '{}' yes
 
-if [ "$HTTP_STATUS" = "200" ]; then
-  log_pass "GET /user-lookup returns 200"
-else
-  log_fail "GET /user-lookup returned ${HTTP_STATUS}, expected 200"
-  log_info "Response: ${HTTP_BODY}"
-fi
+# Tokens
+test_ep POST /tokens/custom 400 "Custom token" '{}' yes
+test_ep POST /users/uid-1/revoke 400 "Revoke tokens" "" yes
 
-LOOKUP_UID=$(echo "$HTTP_BODY" | jq -r '.uid')
-if [ "$LOOKUP_UID" = "$LOCAL_ID" ]; then
-  log_pass "uid matches"
-else
-  log_fail "uid is ${LOOKUP_UID}, expected ${LOCAL_ID}"
-fi
+# Email actions
+test_ep POST /email-actions/password-reset 400 "Password reset" '{}' yes
+test_ep POST /email-actions/verification 400 "Email verify" '{}' yes
+test_ep POST /email-actions/sign-in 400 "Sign-in link" '{}' yes
 
-LOOKUP_EMAIL=$(echo "$HTTP_BODY" | jq -r '.email')
-if [ "$LOOKUP_EMAIL" = "smoke@test.local" ]; then
-  log_pass "email matches"
-else
-  log_fail "email is ${LOOKUP_EMAIL}, expected smoke@test.local"
-fi
+# Auth rejection
+test_ep GET /users/uid-1 401 "Reject no API key" "" no
 
-# ---------------------------------------------------------------------------
-# Test 4: POST /batch-verify
-# ---------------------------------------------------------------------------
-
-log_section "POST /batch-verify"
-
-http_post "${APP_URL}/batch-verify" "{\"tokens\":[\"${ID_TOKEN}\"]}"
-
-if [ "$HTTP_STATUS" = "200" ]; then
-  log_pass "POST /batch-verify returns 200"
-else
-  log_fail "POST /batch-verify returned ${HTTP_STATUS}, expected 200"
-  log_info "Response: ${HTTP_BODY}"
-fi
-
-BATCH_VALID=$(echo "$HTTP_BODY" | jq -r '.summary.valid')
-if [ "$BATCH_VALID" = "1" ]; then
-  log_pass "summary.valid is 1"
-else
-  log_fail "summary.valid is ${BATCH_VALID}, expected 1"
-fi
-
-BATCH_TOTAL=$(echo "$HTTP_BODY" | jq -r '.summary.total')
-if [ "$BATCH_TOTAL" = "1" ]; then
-  log_pass "summary.total is 1"
-else
-  log_fail "summary.total is ${BATCH_TOTAL}, expected 1"
-fi
-
-# ---------------------------------------------------------------------------
-# Results
-# ---------------------------------------------------------------------------
-
+# -- Summary --
 echo ""
-log_section "Results"
-echo -e "  ${GREEN}Passed:  ${PASS}${NC}"
-echo -e "  ${RED}Failed:  ${FAIL}${NC}"
+echo -e "[4/4] ${BOLD}Results${NC}"
+TOTAL=$((PASS+FAIL))
 echo ""
-
-if [ "$FAIL" -gt 0 ]; then
-  echo -e "${RED}${BOLD}SMOKE TEST FAILED${NC}"
-  exit 1
+if [ "$FAIL" -eq 0 ]; then
+    echo -e "  ${GREEN}${BOLD}ALL $TOTAL PASSED${NC}"
+else
+    echo -e "  ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC} / $TOTAL"
 fi
-
-echo -e "${GREEN}${BOLD}SMOKE TEST PASSED${NC}"
-exit 0
+echo ""

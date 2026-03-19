@@ -1,27 +1,33 @@
-/**
- * Process entry point — calls buildApp(), starts Fastify listen.
- * Handles SIGTERM/SIGINT for graceful shutdown so in-flight requests
- * are drained during Cloud Run rollouts or Docker stop.
- *
- * Firebase credential init is handled by the firebase plugin registered
- * inside buildApp() — credential isolation per REQ-006, ADR-001.
- */
-
 import { buildApp } from './app.js';
-import { config } from './config.js';
+import { composeDependencies } from './composition-root.js';
+import { config } from './infra/config.js';
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection', reason);
+  process.exit(1);
+});
 
 async function main(): Promise<void> {
-  const app = await buildApp();
+  const deps = await composeDependencies();
+  const app = await buildApp(deps);
 
-  // Graceful shutdown — Fastify's app.close() drains in-flight connections
   const shutdown = async (signal: string) => {
-    app.log.info({ signal }, 'Received signal, shutting down gracefully');
+    app.log.info({ signal }, 'Shutting down');
     const timer = setTimeout(() => {
-      app.log.error('Shutdown timed out after 10s, forcing exit');
+      app.log.error('Shutdown timed out, forcing exit');
       process.exit(1);
-    }, 10_000);
+    }, config.shutdownTimeout);
+
     try {
       await app.close();
+      await deps.firebaseAdapter.shutdown();
+    } catch (err) {
+      app.log.error({ err }, 'Error during shutdown');
     } finally {
       clearTimeout(timer);
       process.exit(0);
@@ -30,15 +36,6 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-
-  process.on('uncaughtException', (err) => {
-    app.log.error({ err }, 'Uncaught exception, shutting down');
-    process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
-    app.log.error({ err: reason }, 'Unhandled rejection, shutting down');
-    process.exit(1);
-  });
 
   try {
     await app.listen({ port: config.port, host: '0.0.0.0' });

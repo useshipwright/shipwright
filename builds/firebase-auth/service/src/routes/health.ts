@@ -1,24 +1,31 @@
-import type { FastifyInstance } from 'fastify';
-import fp from 'fastify-plugin';
+import { type FastifyInstance, type FastifyPluginAsync } from 'fastify';
 import { createRequire } from 'node:module';
-import { healthSchema } from '../schemas/health.schema.js';
+import type { FirebaseAdapter } from '../domain/types.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../../package.json') as { version: string };
 
-async function healthRoute(app: FastifyInstance): Promise<void> {
-  app.get('/health', { schema: healthSchema }, async (_request, reply) => {
-    const firebaseInitialized = app.hasDecorator('firebaseAuth');
-
-    return reply.code(200).send({
-      status: firebaseInitialized ? 'healthy' : 'degraded',
-      firebase_initialized: firebaseInitialized,
-      version,
-      timestamp: new Date().toISOString(),
-    });
-  });
+export interface HealthRouteOptions {
+  firebaseAdapter: FirebaseAdapter;
 }
 
-export default fp(healthRoute, {
-  name: 'health-route',
-});
+const healthRoute: FastifyPluginAsync<HealthRouteOptions> = async (
+  app: FastifyInstance,
+  opts: HealthRouteOptions,
+) => {
+  const { firebaseAdapter } = opts;
+  const serviceVersion = process.env.BUILD_SHA ?? version;
+
+  app.get('/health', async (_request, reply) => {
+    const firebase = firebaseAdapter.isHealthy() ? 'connected' : 'error';
+
+    return reply.status(200).send({
+      status: 'ok',
+      version: serviceVersion,
+      uptime: process.uptime(),
+      firebase,
+    });
+  });
+};
+
+export default healthRoute;
