@@ -3,7 +3,7 @@
 > 120+ agent sessions. 675 tests. 47 endpoints. 3 transcription backends. $87.
 >
 > One product spec went in. A meeting intelligence backend came out.
-> Upload audio. Get AI-generated notes. Zero hallucinations. $0.04 per meeting.
+> Upload audio. Get AI-generated notes. Zero hallucinations. Under $0.20 per meeting.
 
 Built by [Shipwright](https://shipwright.build).
 
