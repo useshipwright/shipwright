@@ -1,0 +1,500 @@
+capabilities:
+- name: audio_ingestion
+  type: webhook_handler
+  provides:
+  - POST /api/meetings/{id}/audio
+  - WS /api/meetings/{id}/stream
+  - GET /api/meetings/{id}/audio
+  description: Accepts audio via multipart file upload (202 async) or WebSocket streaming
+    (real-time PCM chunks), stores to GCS, publishes to Pub/Sub for transcription.
+    Returns signed playback URLs.
+- name: transcription
+  type: api_client
+  provides:
+  - Deepgram Nova-2 adapter (streaming + batch)
+  - Self-hosted Whisper adapter (batch only)
+  - Google Speech-to-Text Chirp adapter (streaming + batch)
+  description: Adapter-based transcription with speaker diarization. Backend selectable
+    per-user or per-request. Produces timestamped speaker-labeled segments with confidence
+    scores.
+- name: ai_note_generation
+  type: api_client
+  provides:
+  - POST /api/meetings/{id}/notes/generate
+  - Template-driven structured note output
+  - Auto action item extraction
+  - Auto meeting tagging
+  - Embedding generation per section
+  description: Merges transcript + user notes + template, calls Claude API to produce
+    structured meeting notes. Supports regeneration with different templates and version
+    history.
+- name: meeting_templates
+  type: storage_adapter
+  provides:
+  - GET /api/templates
+  - GET /api/templates/{id}
+  - POST /api/templates
+  - PUT /api/templates/{id}
+  - DELETE /api/templates/{id}
+  description: 7 built-in system templates (General, 1:1, Sales, Standup, Retro, Interview,
+    Board) plus user-created custom templates. Each template defines section headings
+    with Claude extraction prompts.
+- name: meeting_crud
+  type: storage_adapter
+  provides:
+  - POST /api/meetings
+  - GET /api/meetings
+  - GET /api/meetings/{id}
+  - PUT /api/meetings/{id}
+  - DELETE /api/meetings/{id}
+  - GET /api/meetings/{id}/transcript
+  - GET /api/meetings/{id}/speakers
+  - PUT /api/meetings/{id}/speakers/{speakerId}
+  - GET /api/meetings/{id}/notes
+  - GET /api/meetings/{id}/notes/latest
+  - GET /api/meetings/{id}/notes/{version}
+  - PUT /api/meetings/{id}/notes/{version}
+  description: "Full meeting lifecycle CRUD with transcript, speaker management, and\
+    \ versioned notes. Meetings progress through recording \u2192 processing \u2192\
+    \ ready \u2192 failed statuses."
+- name: user_notes_ingestion
+  type: data_sync
+  provides:
+  - POST /api/meetings/{id}/user-notes
+  - GET /api/meetings/{id}/user-notes
+  description: Receives user-typed notes from desktop client during meetings, stores
+    as transcript segments with isUserNote flag. These become priority anchors for
+    AI note generation.
+- name: search
+  type: api_client
+  provides:
+  - GET /api/search
+  - GET /api/search/semantic
+  description: Full-text search across meetings, notes, transcripts, and action items
+    with cursor-based pagination. Semantic search via vector similarity over meeting
+    embeddings (Vertex AI or configurable local endpoint).
+- name: cross_meeting_ai_qa
+  type: api_client
+  provides:
+  - POST /api/ai/ask
+  - POST /api/ai/meeting-prep
+  description: "RAG pipeline over meeting history \u2014 embeds question, retrieves\
+    \ top-20 relevant chunks, generates cited answers via Claude. Meeting prep generates\
+    \ briefs from past meetings with overlapping attendees."
+- name: action_item_tracking
+  type: storage_adapter
+  provides:
+  - GET /api/actions
+  - GET /api/actions/summary
+  - GET /api/meetings/{id}/actions
+  - POST /api/actions
+  - PUT /api/actions/{id}
+  - DELETE /api/actions/{id}
+  description: Action items auto-extracted from AI notes or manually created. Tracks
+    assignee, due date, status (open/in_progress/completed/cancelled), and source
+    meeting linkage.
+- name: google_calendar_integration
+  type: data_sync
+  provides:
+  - POST /api/calendar/connect
+  - GET /api/calendar/callback
+  - GET /api/calendar/events
+  - POST /api/calendar/sync
+  - DELETE /api/calendar/disconnect
+  description: OAuth2 Google Calendar integration with incremental sync via sync tokens.
+    Auto-creates meetings from upcoming/started calendar events every 5 minutes. Resolves
+    attendee emails to known users for speaker identification.
+- name: shareable_meeting_notes
+  type: middleware
+  provides:
+  - POST /api/meetings/{id}/share
+  - GET /api/share/{shareId}
+  - GET /api/meetings/{id}/shares
+  - DELETE /api/share/{shareId}
+  description: Creates shareable links with configurable access (public/authenticated/specific_emails).
+    Public shares bypass auth. Supports optional transcript/audio inclusion, expiry,
+    and view count tracking.
+- name: user_profile
+  type: storage_adapter
+  provides:
+  - GET /api/me
+  - PUT /api/me
+  - DELETE /api/me
+  description: User preferences (default template, transcription backend, auto-transcribe,
+    timezone, language) and GDPR-compliant full account deletion.
+- name: auth_middleware
+  type: auth_provider
+  provides:
+  - Firebase JWT verification on /api/* routes
+  - Pub/Sub OIDC verification on /internal/* routes
+  - Share-specific access control on /api/share/* routes
+  description: "Multi-layer auth \u2014 Firebase Auth JWT for API routes, GCP OIDC\
+    \ tokens for internal Pub/Sub push endpoints, and configurable access modes for\
+    \ share routes."
+- name: async_processing_pipeline
+  type: scheduler
+  provides:
+  - 'Pub/Sub topic: audio-processing'
+  - POST /internal/process-audio
+  description: "Pub/Sub push subscriber processes audio asynchronously \u2014 downloads\
+    \ from GCS, calls transcription adapter, writes segments, calculates speaker stats,\
+    \ optionally triggers note generation. 3 retries with exponential backoff and\
+    \ dead-letter topic."
+- name: health_checks
+  type: middleware
+  provides:
+  - GET /health
+  - GET /health/ready
+  description: Liveness probe (no auth, returns version) and readiness probe (checks
+    Firestore + GCS connectivity).
+host_requirements:
+- name: firebase_project
+  description: A configured Firebase project with Authentication enabled (email/password
+    or other providers) and Firestore database provisioned
+  required: true
+  how_to_satisfy: Create a Firebase project, enable Authentication, create a Firestore
+    database, and generate a service account key JSON
+- name: gcs_bucket
+  description: A Google Cloud Storage bucket for audio file storage with appropriate
+    CORS settings for signed URL access
+  required: true
+  how_to_satisfy: Create a GCS bucket in the same GCP project, configure CORS for
+    client-side audio playback
+- name: pubsub_topics
+  description: Google Cloud Pub/Sub topic (audio-processing) with push subscription
+    pointing to /internal/process-audio and a dead-letter topic
+  required: true
+  how_to_satisfy: Create topic "audio-processing", create push subscription to the
+    Cloud Run service URL /internal/process-audio, configure dead-letter topic and
+    3 retry attempts
+- name: gcp_secret_manager
+  description: Secrets stored in GCP Secret Manager and accessible to the runtime
+    service account
+  required: true
+  how_to_satisfy: Store ANTHROPIC_API_KEY, DEEPGRAM_API_KEY, FIREBASE_SERVICE_ACCOUNT,
+    and calendar OAuth credentials in Secret Manager
+- name: vertex_ai_api
+  description: Vertex AI API enabled for text-embedding-004 model (unless using custom
+    EMBEDDING_ENDPOINT)
+  required: false
+  how_to_satisfy: Enable Vertex AI API in GCP console and grant roles/aiplatform.user
+    to the runtime service account
+- name: cloud_run_environment
+  description: Cloud Run service with adequate memory (512MB+ for audio processing),
+    300s request timeout for WebSocket/transcription, and concurrency settings
+  required: true
+  how_to_satisfy: Deploy with --memory 512Mi --timeout 300 --concurrency 80, configure
+    min-instances for calendar cron reliability
+- name: firestore_indexes
+  description: Composite Firestore indexes for meeting queries (userId + date, userId
+    + status, userId + tags) and full-text search fields
+  required: true
+  how_to_satisfy: Deploy firestore.indexes.json with the application or let the pack
+    auto-create indexes on first query (slower)
+- name: google_calendar_oauth_credentials
+  description: Google Cloud OAuth2 credentials configured for Calendar API access
+    (if using calendar integration)
+  required: false
+  how_to_satisfy: Create OAuth2 credentials in GCP Console with Calendar API scope,
+    configure authorized redirect URI to /api/calendar/callback
+- name: iam_roles
+  description: Runtime service account with secretmanager.secretAccessor, logging.logWriter,
+    datastore.user, storage.objectAdmin, and aiplatform.user roles
+  required: true
+  how_to_satisfy: Create a dedicated service account and bind the IAM roles listed
+    in PRD section 8
+integration_points:
+- type: route
+  path: POST /api/meetings
+  event: null
+  description: Create a new meeting (manual or from calendar event)
+- type: route
+  path: GET /api/meetings
+  event: null
+  description: List meetings with pagination, filtering, and sorting
+- type: route
+  path: GET /api/meetings/{id}
+  event: null
+  description: Meeting detail with latest notes summary
+- type: route
+  path: PUT /api/meetings/{id}
+  event: null
+  description: Update meeting metadata (title, tags, attendees, star)
+- type: route
+  path: DELETE /api/meetings/{id}
+  event: null
+  description: Delete meeting and all associated data including GCS audio
+- type: route
+  path: POST /api/meetings/{id}/audio
+  event: null
+  description: Multipart audio upload (webm, wav, mp3, ogg, m4a, flac), max 500MB,
+    returns 202
+- type: route
+  path: WS /api/meetings/{id}/stream
+  event: null
+  description: WebSocket endpoint for real-time audio streaming (PCM 16-bit, 16kHz
+    mono)
+- type: route
+  path: GET /api/meetings/{id}/audio
+  event: null
+  description: Returns signed GCS URL for audio playback (1-hour expiry)
+- type: route
+  path: GET /api/meetings/{id}/transcript
+  event: null
+  description: Full transcript with all segments ordered by time
+- type: route
+  path: GET /api/meetings/{id}/speakers
+  event: null
+  description: Speaker list with resolved names
+- type: route
+  path: PUT /api/meetings/{id}/speakers/{speakerId}
+  event: null
+  description: Rename or resolve a speaker identity
+- type: route
+  path: POST /api/meetings/{id}/notes/generate
+  event: null
+  description: Generate or regenerate AI notes with optional template override
+- type: route
+  path: GET /api/meetings/{id}/notes
+  event: null
+  description: List all note versions for a meeting
+- type: route
+  path: GET /api/meetings/{id}/notes/latest
+  event: null
+  description: Latest generated notes
+- type: route
+  path: GET /api/meetings/{id}/notes/{version}
+  event: null
+  description: Specific note version
+- type: route
+  path: PUT /api/meetings/{id}/notes/{version}
+  event: null
+  description: Edit notes manually (sets isEdited flag)
+- type: route
+  path: POST /api/meetings/{id}/user-notes
+  event: null
+  description: Submit user-typed notes during a meeting
+- type: route
+  path: GET /api/meetings/{id}/user-notes
+  event: null
+  description: Retrieve user notes for a meeting
+- type: route
+  path: GET /api/search
+  event: null
+  description: Full-text search across meetings, notes, transcripts, and actions
+- type: route
+  path: GET /api/search/semantic
+  event: null
+  description: Vector similarity search over meeting embeddings
+- type: route
+  path: POST /api/ai/ask
+  event: null
+  description: Cross-meeting RAG Q&A with cited answers
+- type: route
+  path: POST /api/ai/meeting-prep
+  event: null
+  description: Generate meeting prep brief from past meetings with overlapping attendees
+- type: route
+  path: GET /api/actions
+  event: null
+  description: List all action items with filters
+- type: route
+  path: GET /api/actions/summary
+  event: null
+  description: Action item dashboard (open, overdue, due this week, by assignee)
+- type: route
+  path: GET /api/meetings/{id}/actions
+  event: null
+  description: Action items for a specific meeting
+- type: route
+  path: POST /api/actions
+  event: null
+  description: Create manual action item
+- type: route
+  path: PUT /api/actions/{id}
+  event: null
+  description: Update action item status, assignee, due date
+- type: route
+  path: DELETE /api/actions/{id}
+  event: null
+  description: Delete action item
+- type: route
+  path: GET /api/templates
+  event: null
+  description: List all templates (system + custom)
+- type: route
+  path: GET /api/templates/{id}
+  event: null
+  description: Template detail
+- type: route
+  path: POST /api/templates
+  event: null
+  description: Create custom template
+- type: route
+  path: PUT /api/templates/{id}
+  event: null
+  description: Update custom template (403 on system templates)
+- type: route
+  path: DELETE /api/templates/{id}
+  event: null
+  description: Delete custom template
+- type: route
+  path: POST /api/calendar/connect
+  event: null
+  description: Initiate Google Calendar OAuth2 flow
+- type: route
+  path: GET /api/calendar/callback
+  event: null
+  description: Google Calendar OAuth2 callback
+- type: route
+  path: GET /api/calendar/events
+  event: null
+  description: List calendar events within date range
+- type: route
+  path: POST /api/calendar/sync
+  event: null
+  description: Incremental calendar sync via sync tokens
+- type: route
+  path: DELETE /api/calendar/disconnect
+  event: null
+  description: Revoke Google Calendar access
+- type: route
+  path: POST /api/meetings/{id}/share
+  event: null
+  description: Create shareable meeting note link
+- type: route
+  path: GET /api/share/{shareId}
+  event: null
+  description: View shared notes (public endpoint for public shares)
+- type: route
+  path: GET /api/meetings/{id}/shares
+  event: null
+  description: List active shares for a meeting
+- type: route
+  path: DELETE /api/share/{shareId}
+  event: null
+  description: Revoke a share link
+- type: route
+  path: GET /api/me
+  event: null
+  description: Current user profile and preferences
+- type: route
+  path: PUT /api/me
+  event: null
+  description: Update user preferences
+- type: route
+  path: DELETE /api/me
+  event: null
+  description: Delete account and all data (GDPR)
+- type: route
+  path: GET /health
+  event: null
+  description: Liveness probe (no auth)
+- type: route
+  path: GET /health/ready
+  event: null
+  description: Readiness probe (checks Firestore + GCS)
+- type: route
+  path: POST /internal/process-audio
+  event: null
+  description: Pub/Sub push endpoint for async audio transcription pipeline
+- type: event
+  path: null
+  event: audio-processing.published
+  description: Audio upload or stream finalization publishes to Pub/Sub for async
+    transcription
+- type: event
+  path: null
+  event: meeting.status.changed
+  description: "Meeting transitions through recording \u2192 processing \u2192 ready\
+    \ \u2192 failed"
+- type: event
+  path: null
+  event: notes.generated
+  description: AI note generation completed, triggers embedding generation
+- type: cron_job
+  path: calendar-sync
+  event: null
+  description: Every 5 minutes, syncs Google Calendar events and auto-creates meeting
+    records
+- type: middleware
+  path: /api/*
+  event: null
+  description: Firebase Auth JWT verification middleware on all API routes
+- type: middleware
+  path: /internal/*
+  event: null
+  description: Pub/Sub OIDC token verification middleware on internal routes
+- type: middleware
+  path: global
+  event: null
+  description: Rate limiting (100 req/min API, 10 req/min AI routes), request ID injection,
+    Zod input validation
+- type: hook
+  path: null
+  event: startup
+  description: Seed system templates on first run, initialize Firestore indexes, verify
+    GCS bucket access
+env_requirements:
+- name: ANTHROPIC_API_KEY
+  description: Claude API key for AI note generation, cross-meeting Q&A, and meeting
+    prep
+  required: true
+  sensitive: true
+  default: null
+- name: DEEPGRAM_API_KEY
+  description: Deepgram API key for Nova-2 transcription backend
+  required: false
+  sensitive: true
+  default: null
+- name: FIREBASE_SERVICE_ACCOUNT
+  description: Firebase service account JSON for Auth JWT verification and Firestore
+    access
+  required: true
+  sensitive: true
+  default: null
+- name: GCS_BUCKET
+  description: Google Cloud Storage bucket name for audio file storage
+  required: true
+  sensitive: false
+  default: null
+- name: GOOGLE_CLOUD_PROJECT
+  description: GCP project ID for Pub/Sub, Vertex AI, and other GCP services
+  required: true
+  sensitive: false
+  default: null
+- name: WHISPER_ENDPOINT
+  description: URL of self-hosted Whisper transcription service
+  required: false
+  sensitive: false
+  default: null
+- name: DIARIZATION_ENDPOINT
+  description: URL of self-hosted pyannote diarization service (used with Whisper
+    backend)
+  required: false
+  sensitive: false
+  default: null
+- name: EMBEDDING_ENDPOINT
+  description: URL of self-hosted embedding endpoint (alternative to Vertex AI text-embedding-004)
+  required: false
+  sensitive: false
+  default: null
+- name: GOOGLE_CALENDAR_CLIENT_ID
+  description: OAuth2 client ID for Google Calendar integration (implied by OAuth2
+    flow)
+  required: false
+  sensitive: true
+  default: null
+- name: GOOGLE_CALENDAR_CLIENT_SECRET
+  description: OAuth2 client secret for Google Calendar integration (implied by OAuth2
+    flow)
+  required: false
+  sensitive: true
+  default: null
+compatibility:
+  stacks:
+  - node
+  min_versions:
+    node: '20'
+  max_versions: {}
+

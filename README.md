@@ -28,7 +28,20 @@ This repo publishes complete builds. No cherry-picking. No pipeline internals. J
 
 | Build | Tasks | Failures | Tests | Endpoints | Readiness | Cost | Time |
 |-------|-------|----------|-------|-----------|-----------|------|------|
+| [**Muesli**](builds/muesli/) | 73/74 | 1 | 675 | 47 | 77% | $87 | 7h |
 | [**Firebase Auth v1.2**](builds/firebase-auth/) | 55/55 | **0** | 456 | 22 | 30/31 | $56 | 5.4h |
+
+---
+
+### Muesli -- Meeting Intelligence API
+
+Granola-inspired meeting intelligence backend. 47-endpoint Fastify + TypeScript API with audio transcription (3 pluggable backends: Deepgram, Whisper, Google STT), AI note generation via Claude, action item extraction, full-text and semantic search, cross-meeting RAG Q&A, Google Calendar OAuth2 integration, shareable meeting notes, WebSocket real-time streaming, and GDPR account deletion.
+
+Firebase Auth JWT on all routes. OIDC on internal Pub/Sub/Scheduler endpoints. Per-user rate limiting. Zod validation at every boundary. 12 architecture decision records. Threat model with RBAC matrix.
+
+120+ agent sessions across discovery, planning, execution, and verification. 28 issues detected and self-corrected. Deployed to Cloud Run and verified with real audio -- Deepgram transcribed a meeting recording, Claude generated structured notes with zero hallucinations.
+
+**[Read the full build report ->](builds/muesli/)**
 
 ---
 

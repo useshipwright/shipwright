@@ -1,0 +1,607 @@
+requirements:
+- id: REQ-001
+  title: Audio file upload
+  description: Accept multipart audio file uploads (webm, wav, mp3, ogg, m4a, flac)
+    up to 500MB via POST endpoint, store to GCS, and publish to Pub/Sub for async
+    transcription.
+  acceptance_criteria:
+  - POST /api/meetings/{id}/audio accepts multipart file upload
+  - Supports webm, wav, mp3, ogg, m4a, flac formats
+  - Rejects unsupported formats with 400 and list of supported formats
+  - Rejects files over 500MB with 413 and max size in response
+  - Stores audio to GCS at audio/{userId}/{meetingId}/
+  - Returns 202 Accepted on successful upload
+  - Publishes message to audio-processing Pub/Sub topic
+  - Meeting status transitions to 'processing'
+  - Requires valid Firebase Auth JWT
+  risk: medium
+  must_ask_human: false
+- id: REQ-002
+  title: WebSocket audio streaming
+  description: Accept live audio chunks via WebSocket connection, buffer into segments,
+    write to GCS, publish for transcription, and return interim transcript results.
+  acceptance_criteria:
+  - WS /api/meetings/{id}/stream accepts WebSocket connections
+  - Accepts PCM 16-bit, 16kHz mono audio chunks
+  - Buffers chunks into 10-second segments (default)
+  - Writes chunks to GCS as they arrive
+  - Publishes each segment for transcription
+  - Sends JSON frames back with interim transcript results
+  - On connection close, finalizes meeting and triggers full processing
+  - Chunks already in GCS are preserved on unexpected disconnect
+  - Requires valid Firebase Auth JWT on connection upgrade
+  risk: medium
+  must_ask_human: false
+- id: REQ-003
+  title: Audio playback via signed URL
+  description: Return a time-limited signed GCS URL for audio playback.
+  acceptance_criteria:
+  - GET /api/meetings/{id}/audio returns a signed GCS URL
+  - Signed URL expires after 1 hour
+  - Returns 404 if no audio exists for meeting
+  - Only meeting owner can request the URL
+  risk: low
+  must_ask_human: false
+- id: REQ-004
+  title: Deepgram transcription backend
+  description: Transcribe audio using Deepgram Nova-2 with diarization, smart formatting,
+    punctuation, and utterance detection. Support both batch and streaming modes.
+  acceptance_criteria:
+  - Uses @deepgram/sdk with Nova-2 model
+  - Enables diarization, smart formatting, punctuation, utterance detection
+  - Supports streaming transcription via Deepgram WebSocket API
+  - Returns transcript segments with speaker labels, text, start/end times, confidence
+  - Is the default backend when no preference is set
+  risk: medium
+  must_ask_human: false
+- id: REQ-005
+  title: Self-hosted Whisper transcription backend
+  description: Transcribe audio via configurable HTTP endpoint for Whisper, with separate
+    diarization endpoint for pyannote.
+  acceptance_criteria:
+  - Calls WHISPER_ENDPOINT with audio data
+  - Receives JSON transcript with timestamps
+  - Calls DIARIZATION_ENDPOINT for speaker diarization via pyannote
+  - "Batch only \u2014 no streaming support"
+  - Returns transcript segments in same format as other backends
+  - Gracefully handles missing endpoint configuration with clear error
+  risk: medium
+  must_ask_human: false
+- id: REQ-006
+  title: Google Speech-to-Text transcription backend
+  description: Transcribe audio using Google Cloud Speech v2 Chirp model with built-in
+    diarization and gRPC streaming.
+  acceptance_criteria:
+  - Uses @google-cloud/speech v2 with Chirp model
+  - Enables built-in diarization
+  - Supports streaming via gRPC
+  - Returns transcript segments in same format as other backends
+  risk: medium
+  must_ask_human: false
+- id: REQ-007
+  title: Pluggable transcription backend selection
+  description: Allow backend selection per-user via preferences and per-request via
+    query parameter.
+  acceptance_criteria:
+  - User preference transcriptionBackend selects default backend
+  - Query param ?backend=deepgram|whisper|google-stt overrides user preference
+  - Invalid backend value returns 400
+  - 'All backends produce identical segment schema: speaker, text, start, end, confidence,
+    channel'
+  risk: low
+  must_ask_human: false
+- id: REQ-008
+  title: Transcript segment storage
+  description: Store transcript segments in Firestore with speaker label, text, timestamps,
+    confidence, and channel metadata.
+  acceptance_criteria:
+  - 'Segments stored with fields: speaker label, text, start time (seconds), end time
+    (seconds), confidence score, channel'
+  - 'Channel values: system_audio, microphone, user_input'
+  - Segments ordered by start time
+  - Batch writes used for performance
+  risk: low
+  must_ask_human: false
+- id: REQ-009
+  title: AI note generation from transcript and user notes
+  description: Merge transcript segments, user-typed notes, and template into structured
+    meeting notes via Claude API.
+  acceptance_criteria:
+  - POST /api/meetings/{id}/notes/generate triggers note generation
+  - Loads transcript segments ordered by time
+  - Loads user-typed notes (isUserNote segments)
+  - Loads selected template (from request or user default)
+  - 'Builds prompt with transcript as [MM:SS] Speaker: text format'
+  - 'Includes user notes as USER NOTE [MM:SS]: text'
+  - Calls Claude API (Sonnet by default)
+  - Parses response into sections matching template headings
+  - Extracts action items from output and saves separately
+  - Auto-tags meeting based on content
+  - Generates embeddings for each section
+  - Saves notes with incrementing version number
+  - Completes within 30 seconds
+  risk: high
+  must_ask_human: true
+- id: REQ-010
+  title: Note regeneration with template change
+  description: Allow regeneration of notes with a different template, preserving previous
+    versions.
+  acceptance_criteria:
+  - POST /api/meetings/{id}/notes/generate with optional templateId regenerates notes
+  - Previous note versions are preserved
+  - Warning returned if user has manually edited current notes
+  - New version number assigned
+  risk: medium
+  must_ask_human: false
+- id: REQ-011
+  title: AI operation audit logging
+  description: Log all AI operations with model, token usage, latency, and cost.
+  acceptance_criteria:
+  - 'Every Claude API call logs: model name, input tokens, output tokens, latency,
+    estimated cost'
+  - Logs are structured JSON format
+  - Logs include requestId and userId
+  - No transcript content or PII in logs
+  risk: medium
+  must_ask_human: false
+- id: REQ-012
+  title: Built-in system templates
+  description: Provide 7 read-only system templates seeded on first run.
+  acceptance_criteria:
+  - 'System templates seeded on first application run: General, 1:1, Sales Call, Standup,
+    Retrospective, Interview, Board/Executive'
+  - Each template has sections with heading and prompt fields
+  - System templates are read-only (403 on update/delete)
+  - Templates available to all users
+  risk: low
+  must_ask_human: false
+- id: REQ-013
+  title: Custom template CRUD
+  description: Users can create, read, update, and delete their own custom templates.
+  acceptance_criteria:
+  - POST /api/templates creates a custom template with sections
+  - GET /api/templates lists all system + user's custom templates
+  - GET /api/templates/{id} returns template detail
+  - PUT /api/templates/{id} updates a custom template
+  - PUT /api/templates/{id} returns 403 for system templates
+  - DELETE /api/templates/{id} deletes a custom template
+  - DELETE /api/templates/{id} returns 403 for system templates
+  - Custom templates scoped to the creating user
+  risk: low
+  must_ask_human: false
+- id: REQ-014
+  title: Meeting CRUD operations
+  description: Full CRUD for meetings with metadata management.
+  acceptance_criteria:
+  - POST /api/meetings creates a meeting (manual or from calendar event), returns
+    201
+  - GET /api/meetings lists meetings with pagination, filtering (date, attendee, tag,
+    starred), sorting
+  - GET /api/meetings/{id} returns meeting detail with latest notes summary
+  - PUT /api/meetings/{id} updates title, tags, attendees, star/unstar
+  - DELETE /api/meetings/{id} deletes meeting + all data + audio from GCS
+  - All operations scoped to authenticated user's data
+  - CRUD operations complete in < 300ms
+  risk: low
+  must_ask_human: false
+- id: REQ-015
+  title: Meeting status lifecycle
+  description: Meetings track status through defined lifecycle states.
+  acceptance_criteria:
+  - 'Meeting statuses: recording, processing, ready, failed'
+  - Status transitions logged in structured logs
+  - Failed status includes error information
+  risk: low
+  must_ask_human: false
+- id: REQ-016
+  title: Transcript and speaker management
+  description: Retrieve transcripts and manage speaker identity resolution.
+  acceptance_criteria:
+  - GET /api/meetings/{id}/transcript returns all segments ordered by time
+  - GET /api/meetings/{id}/speakers returns speaker list with resolved names
+  - PUT /api/meetings/{id}/speakers/{speakerId} renames/resolves a speaker
+  risk: low
+  must_ask_human: false
+- id: REQ-017
+  title: Meeting notes versioning
+  description: Support versioned meeting notes with edit tracking.
+  acceptance_criteria:
+  - GET /api/meetings/{id}/notes lists all note versions
+  - GET /api/meetings/{id}/notes/latest returns latest notes
+  - GET /api/meetings/{id}/notes/{version} returns specific version
+  - PUT /api/meetings/{id}/notes/{version} edits notes and sets isEdited flag
+  risk: low
+  must_ask_human: false
+- id: REQ-018
+  title: User notes ingestion during meetings
+  description: Accept user-typed notes during meetings and store as transcript segments.
+  acceptance_criteria:
+  - POST /api/meetings/{id}/user-notes accepts { text, timestamp? }
+  - 'Stores as transcript segment with isUserNote: true'
+  - Timestamp is seconds from meeting start, defaults to current time minus startedAt
+  - GET /api/meetings/{id}/user-notes retrieves all user notes for a meeting
+  - User notes serve as anchors during AI note generation
+  risk: low
+  must_ask_human: false
+- id: REQ-019
+  title: Full-text search
+  description: Search across meetings, notes, actions with filters and cursor-based
+    pagination.
+  acceptance_criteria:
+  - GET /api/search?q=...&type=meetings|notes|actions|all performs full-text search
+  - 'Supports filters: dateFrom, dateTo, attendee, tag, status, isStarred'
+  - Uses cursor-based pagination
+  - Searches meeting titles, transcript text, note content, action item titles
+  - Returns results in < 500ms
+  risk: medium
+  must_ask_human: false
+- id: REQ-020
+  title: Semantic search with embeddings
+  description: Vector similarity search across meeting embeddings with snippet highlighting.
+  acceptance_criteria:
+  - GET /api/search/semantic?q=... generates embedding for query
+  - Performs vector similarity search (cosine) across stored meeting embeddings
+  - Returns meetings ranked by similarity with snippet highlighting
+  - Supports same filters as full-text search
+  - Returns results in < 2 seconds
+  risk: medium
+  must_ask_human: false
+- id: REQ-021
+  title: Embedding generation
+  description: Generate embeddings for meeting content after note generation.
+  acceptance_criteria:
+  - After note generation, meeting notes and transcript split into ~500-token chunks
+  - Chunks embedded via Vertex AI text-embedding-004 or configurable EMBEDDING_ENDPOINT
+  - Embeddings stored for later similarity search
+  - "Embedding failure is non-blocking \u2014 notes still available, semantic search\
+    \ degraded"
+  risk: medium
+  must_ask_human: false
+- id: REQ-022
+  title: Cross-meeting AI Q&A via RAG
+  description: Answer questions across meeting history using RAG pipeline with citations.
+  acceptance_criteria:
+  - POST /api/ai/ask accepts { question, filters? }
+  - Embeds the question
+  - Retrieves top-20 relevant chunks from meeting embeddings
+  - Applies optional filters (dateRange, attendees, tags, meetingIds)
+  - Builds Claude prompt with context annotated with meeting title, date, speaker
+  - Returns answer with citations referencing specific meetings + timestamps
+  - Completes in < 10 seconds
+  - Rate limited to 10 requests/min
+  risk: high
+  must_ask_human: true
+- id: REQ-023
+  title: AI meeting prep
+  description: Generate meeting prep briefs based on past meetings with attendees.
+  acceptance_criteria:
+  - POST /api/ai/meeting-prep accepts { calendarEventId } or { attendees }
+  - Finds all past meetings with overlapping attendees
+  - 'Generates prep brief: previous topics, open action items, relationship context,
+    suggested talking points'
+  - Rate limited to 10 requests/min
+  risk: medium
+  must_ask_human: false
+- id: REQ-024
+  title: Action item CRUD and tracking
+  description: Manage action items extracted from meetings or created manually.
+  acceptance_criteria:
+  - GET /api/actions lists all user's action items, filterable by status, assignee,
+    meeting, due date
+  - 'GET /api/actions/summary returns dashboard: total open, overdue, due this week,
+    recently completed, grouped by assignee'
+  - GET /api/meetings/{id}/actions returns actions for a specific meeting
+  - POST /api/actions creates manual action item
+  - PUT /api/actions/{id} updates status, assignee, due date, title
+  - DELETE /api/actions/{id} deletes action item
+  - 'Action items have: title, assignee (name/email), dueDate, status (open/in_progress/completed/cancelled),
+    source (ai_extracted/manual), linked transcript segment'
+  risk: low
+  must_ask_human: false
+- id: REQ-025
+  title: Google Calendar OAuth2 integration
+  description: Connect/disconnect Google Calendar via OAuth2 flow.
+  acceptance_criteria:
+  - POST /api/calendar/connect initiates OAuth2 flow
+  - GET /api/calendar/callback handles OAuth callback and stores tokens
+  - DELETE /api/calendar/disconnect revokes access and removes tokens
+  - Auto-refreshes expired tokens; disconnects and notifies user if refresh fails
+  risk: high
+  must_ask_human: true
+- id: REQ-026
+  title: Calendar event sync and auto-meeting creation
+  description: Sync calendar events and automatically create meeting records.
+  acceptance_criteria:
+  - GET /api/calendar/events?dateFrom=...&dateTo=... lists events
+  - POST /api/calendar/sync performs incremental sync via sync tokens
+  - Periodic sync every 5 minutes via internal cron
+  - Detects upcoming/started events and creates meeting records
+  - Pre-populates meeting with title, attendees, description from calendar
+  - Matches calendar attendee emails against known users for speaker identification
+  risk: medium
+  must_ask_human: false
+- id: REQ-027
+  title: Shareable meeting note links
+  description: Create and manage shareable links to meeting notes with access controls.
+  acceptance_criteria:
+  - POST /api/meetings/{id}/share creates share link with { access, allowedEmails?,
+    includeTranscript, includeAudio, expiresAt? }
+  - 'Access modes: public (no auth), authenticated (any valid JWT), specific_emails
+    (JWT + email check)'
+  - "GET /api/share/{shareId} returns shared notes \u2014 public endpoint for public\
+    \ shares"
+  - Shared view returns title, date, attendee names (no emails), notes, optionally
+    transcript/audio
+  - Increments view count on access
+  - Returns 404 if share is expired
+  - GET /api/meetings/{id}/shares lists shares for a meeting
+  - DELETE /api/share/{shareId} revokes share
+  risk: high
+  must_ask_human: true
+- id: REQ-028
+  title: User profile and preferences management
+  description: Manage user profile and preferences including account deletion.
+  acceptance_criteria:
+  - GET /api/me returns current user profile + preferences
+  - 'PUT /api/me updates preferences: defaultTemplateId, transcriptionBackend, autoTranscribe,
+    timezone, language'
+  - DELETE /api/me deletes account + all user data (GDPR compliance)
+  - Account deletion removes all meetings, audio, notes, actions, shares, calendar
+    connections
+  risk: high
+  must_ask_human: true
+- id: REQ-029
+  title: Health and readiness endpoints
+  description: Health check and readiness probe endpoints without authentication.
+  acceptance_criteria:
+  - "GET /health returns 200 with { status: 'ok', version } \u2014 no auth required"
+  - GET /health/ready returns 200 after checking Firestore and GCS connectivity
+  - GET /health/ready returns 503 if dependencies are unavailable
+  risk: low
+  must_ask_human: false
+- id: REQ-030
+  title: Firebase Auth JWT verification on all API routes
+  description: All /api/* routes require valid Firebase Auth JWT. Share routes vary
+    by share settings.
+  acceptance_criteria:
+  - All /api/* routes return 401 without valid Firebase Auth JWT
+  - JWT is verified via Firebase Admin SDK
+  - userId extracted from JWT and used to scope all queries
+  - Internal routes (/internal/*) authenticated via Pub/Sub OIDC tokens
+  - Share routes enforce access based on share settings (public/authenticated/specific_emails)
+  risk: high
+  must_ask_human: true
+- id: REQ-031
+  title: Rate limiting
+  description: Rate limit API and AI endpoints.
+  acceptance_criteria:
+  - API routes limited to 100 requests/min per user
+  - AI routes (/api/ai/*) limited to 10 requests/min per user
+  - Returns 429 with Retry-After header when exceeded
+  risk: medium
+  must_ask_human: false
+- id: REQ-032
+  title: Input validation via Zod
+  description: Validate all request bodies and query parameters with Zod schemas.
+  acceptance_criteria:
+  - All request bodies validated with Zod schemas
+  - All query parameters validated with Zod schemas
+  - Invalid input returns 400 with descriptive error message
+  risk: medium
+  must_ask_human: false
+- id: REQ-033
+  title: "Data isolation \u2014 user scoping"
+  description: All Firestore queries scoped to userId so users can only access their
+    own data.
+  acceptance_criteria:
+  - Every Firestore query includes userId filter
+  - Users cannot access other users' meetings, notes, actions, or templates
+  - Audio files stored under audio/{userId}/ path in GCS
+  risk: high
+  must_ask_human: true
+- id: REQ-034
+  title: Pub/Sub audio processing pipeline
+  description: Async audio processing via Pub/Sub with retry and dead-letter support.
+  acceptance_criteria:
+  - Pub/Sub topic 'audio-processing' receives messages on audio upload/stream segment
+  - Push subscriber at /internal/process-audio handles processing
+  - "Pipeline: download audio \u2192 call transcription adapter \u2192 write segments\
+    \ \u2192 calculate speaker stats \u2192 optionally trigger note generation \u2192\
+    \ update meeting status"
+  - 3 retry attempts with exponential backoff
+  - Dead-letter topic receives messages after retry exhaustion
+  - Meeting marked as 'failed' with error details on final failure
+  risk: medium
+  must_ask_human: false
+- id: REQ-035
+  title: Failure handling and retry logic
+  description: Comprehensive retry and graceful degradation across all external dependencies.
+  acceptance_criteria:
+  - 'Transcription failure: retry 3x with backoff, then mark meeting failed'
+  - 'Claude API failure: retry 2x, return partial results, queue retry'
+  - 'GCS failure: retry 3x, then 503'
+  - 'Firestore unavailable: retry 3x, then 503'
+  - 'Embedding failure: non-blocking, notes available, semantic search degraded'
+  - 'Calendar token expired: auto-refresh, disconnect and notify if refresh fails'
+  - 'Invalid audio format: 400 with supported formats listed'
+  - 'Oversized audio: 413 with max size'
+  risk: medium
+  must_ask_human: false
+- id: REQ-036
+  title: Structured JSON logging
+  description: Comprehensive structured logging across all operations.
+  acceptance_criteria:
+  - All logs are structured JSON
+  - All logs include requestId and userId
+  - Meeting lifecycle events logged (created, recording, processing, ready, failed)
+  - Audio processing events logged (received, adapter called, segments written, duration)
+  - AI operations logged (model, tokens, latency, cost)
+  - Search queries logged (type, query length, result count, latency)
+  - WebSocket connections logged (opened, bytes received, closed)
+  - Calendar sync logged (events synced, meetings created)
+  - Auth events logged (success/failure, no PII)
+  - Share access logged (shareId, access type, view count)
+  - Error breakdown by route, service, adapter
+  - No PII in logs (no transcript content, user notes, attendee emails)
+  risk: medium
+  must_ask_human: false
+- id: REQ-037
+  title: Docker deployment for Cloud Run
+  description: Single Docker image deployable to GCP Cloud Run with all dependencies.
+  acceptance_criteria:
+  - Single Docker image contains entire application
+  - Configurable via environment variables and GCP Secret Manager
+  - Runs on Node 20+
+  - Uses pnpm as package manager
+  - Supports pluggable transcription backends via configuration
+  risk: medium
+  must_ask_human: false
+non_goals:
+- Desktop app, browser extension, or any frontend (backend API only)
+- System audio capture (desktop client concern)
+- Meeting bot that joins Zoom/Meet/Teams calls
+- Multi-tenant SaaS (single-tenant self-hosted)
+- Video recording or screen capture
+- Billing or subscription management
+- Slack or Microsoft Teams integration
+- End-to-end encryption
+- Mobile app
+- Real-time collaborative note editing
+assumptions:
+- id: ASSUMP-001
+  text: Firebase Auth is already configured and users are created/managed externally
+    (e.g., via a frontend or admin tool). The API only verifies JWTs, not manage user
+    registration.
+  related_requirement: null
+- id: ASSUMP-002
+  text: "GCP infrastructure (Firestore, GCS bucket, Pub/Sub topics, Secret Manager)\
+    \ is provisioned before deployment \u2014 the application does not create these\
+    \ resources."
+  related_requirement: null
+- id: ASSUMP-003
+  text: For self-hosted Whisper, the Whisper and pyannote endpoints are already running
+    and accessible from the Cloud Run service.
+  related_requirement: null
+- id: ASSUMP-004
+  text: Vertex AI text-embedding-004 model is available in the configured GCP project
+    and region.
+  related_requirement: null
+- id: ASSUMP-005
+  text: "Google Calendar OAuth2 client credentials (client ID, client secret) are\
+    \ pre-configured \u2014 the PRD does not list these as required secrets."
+  related_requirement: null
+- id: ASSUMP-006
+  text: "Single-tenant means one deployment per organization \u2014 no workspace/org\
+    \ isolation within the app. All authenticated users share the same instance but\
+    \ data is scoped per userId."
+  related_requirement: null
+- id: ASSUMP-007
+  text: The Anthropic API key has sufficient quota for Sonnet and Opus model access.
+  related_requirement: null
+- id: ASSUMP-008
+  text: System templates are seeded on first application startup (not via a migration
+    script or manual step).
+  related_requirement: null
+- id: ASSUMP-009
+  text: Full-text search is implemented using Firestore's native query capabilities
+    (or a composite index strategy), not an external search engine like Elasticsearch.
+  related_requirement: null
+- id: ASSUMP-010
+  text: Embeddings for semantic search are stored in Firestore (not a dedicated vector
+    DB like Pinecone or pgvector).
+  related_requirement: null
+- id: ASSUMP-011
+  text: Rate limiting is per-user, implemented in-memory (or via Firestore counters),
+    not via an external service like Redis.
+  related_requirement: null
+open_questions:
+- id: Q-001
+  text: Where are vector embeddings stored and how is similarity search performed?
+    Firestore doesn't natively support vector similarity search. Is there a plan to
+    use Vertex AI Matching Engine, a separate vector DB, or Firestore's vector search
+    extension?
+  is_blocker: true
+  related_requirement: REQ-020
+- id: Q-002
+  text: How does full-text search work across Firestore? Firestore has limited full-text
+    search capabilities. Will this use Firestore's native queries (limited to prefix
+    matching), or is there a plan for an external search solution?
+  is_blocker: true
+  related_requirement: REQ-019
+- id: Q-003
+  text: Google Calendar OAuth2 requires a client_id and client_secret. These are not
+    listed in Required Secrets (section 6). Should GOOGLE_CALENDAR_CLIENT_ID and GOOGLE_CALENDAR_CLIENT_SECRET
+    be added?
+  is_blocker: true
+  related_requirement: REQ-025
+- id: Q-004
+  text: What is the redirect URI for the Google Calendar OAuth2 callback? Is it derived
+    from a configured base URL, or is there a separate env var?
+  is_blocker: true
+  related_requirement: REQ-025
+- id: Q-005
+  text: How are calendar OAuth2 refresh tokens stored? In Firestore under the user
+    document? Are they encrypted at rest?
+  is_blocker: false
+  related_requirement: REQ-025
+- id: Q-006
+  text: The PRD says 'single-tenant self-hosted' but all data is scoped to userId.
+    Does this mean multiple users share one instance (team deployment) or strictly
+    one user per deployment?
+  is_blocker: false
+  related_requirement: REQ-033
+- id: Q-007
+  text: What happens to action items when a meeting is deleted? Cascade delete or
+    orphan them?
+  is_blocker: false
+  related_requirement: REQ-014
+- id: Q-008
+  text: For the specific_emails share access mode, how are allowedEmails verified?
+    Does the JWT need to contain the email claim, and is email verification required?
+  is_blocker: false
+  related_requirement: REQ-027
+- id: Q-009
+  text: What is the expected API response format? Is there a standard envelope (e.g.,
+    { data, meta, error }) or are responses flat?
+  is_blocker: false
+  related_requirement: REQ-014
+- id: Q-010
+  text: "The 5-minute calendar sync cron \u2014 how is this implemented on Cloud Run\
+    \ which is request-driven? Cloud Scheduler triggering an internal endpoint? Or\
+    \ a long-running background process?"
+  is_blocker: true
+  related_requirement: REQ-026
+- id: Q-011
+  text: For note generation, what's the max transcript length that fits Claude's context
+    window? Is there a chunking/summarization strategy for very long meetings (3+
+    hours)?
+  is_blocker: false
+  related_requirement: REQ-009
+- id: Q-012
+  text: "The PRD mentions 'Opus available for complex meetings' \u2014 what triggers\
+    \ Opus vs Sonnet selection? Is it user-configurable or automatic based on meeting\
+    \ length/complexity?"
+  is_blocker: false
+  related_requirement: REQ-009
+- id: Q-013
+  text: For the speaker resolution feature (PUT /api/meetings/{id}/speakers/{speakerId}),
+    does renaming a speaker in one meeting propagate to other meetings with the same
+    speaker?
+  is_blocker: false
+  related_requirement: REQ-016
+- id: Q-014
+  text: Is there pagination on GET /api/meetings/{id}/transcript for very long meetings?
+    A 3-hour meeting could have thousands of segments.
+  is_blocker: false
+  related_requirement: REQ-016
+- id: Q-015
+  text: What Claude model version/ID should be used? The PRD says 'Sonnet' and 'Opus'
+    but doesn't specify exact model IDs (e.g., claude-sonnet-4-6 vs claude-sonnet-4-5-20241022).
+  is_blocker: false
+  related_requirement: REQ-009
+- id: Q-016
+  text: How is the 'internal cron' for calendar sync implemented? Cloud Run doesn't
+    support native cron. Is Cloud Scheduler assumed to be part of the infrastructure?
+  is_blocker: true
+  related_requirement: REQ-026
+

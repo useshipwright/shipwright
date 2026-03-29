@@ -1,0 +1,207 @@
+version: '1.0'
+stack: node
+framework: fastify
+invariants:
+- id: SI-001
+  category: entry_point
+  description: Fastify server entry point must exist
+  file: src/app.ts
+  check: file_exists
+  expected: src/app.ts
+  severity: error
+- id: SI-002
+  category: entry_point
+  description: Health route module must exist
+  file: src/routes/health.ts
+  check: file_exists
+  expected: src/routes/health.ts
+  severity: error
+- id: SI-003
+  category: entry_point
+  description: Meeting routes module must exist
+  file: src/routes/meetings.ts
+  check: file_exists
+  expected: src/routes/meetings.ts
+  severity: error
+- id: SI-004
+  category: entry_point
+  description: Template routes module must exist
+  file: src/routes/templates.ts
+  check: file_exists
+  expected: src/routes/templates.ts
+  severity: error
+- id: SI-005
+  category: entry_point
+  description: Action routes module must exist
+  file: src/routes/actions.ts
+  check: file_exists
+  expected: src/routes/actions.ts
+  severity: error
+- id: SI-006
+  category: entry_point
+  description: Search routes module must exist
+  file: src/routes/search.ts
+  check: file_exists
+  expected: src/routes/search.ts
+  severity: error
+- id: SI-007
+  category: entry_point
+  description: AI routes module must exist
+  file: src/routes/ai.ts
+  check: file_exists
+  expected: src/routes/ai.ts
+  severity: error
+- id: SI-008
+  category: entry_point
+  description: Calendar routes module must exist
+  file: src/routes/calendar.ts
+  check: file_exists
+  expected: src/routes/calendar.ts
+  severity: error
+- id: SI-009
+  category: entry_point
+  description: Share routes module must exist
+  file: src/routes/share.ts
+  check: file_exists
+  expected: src/routes/share.ts
+  severity: error
+- id: SI-010
+  category: entry_point
+  description: User routes module must exist
+  file: src/routes/user.ts
+  check: file_exists
+  expected: src/routes/user.ts
+  severity: error
+- id: SI-011
+  category: entry_point
+  description: Audio processing internal worker must exist
+  file: src/routes/internal/process-audio.ts
+  check: file_exists
+  expected: src/routes/internal/process-audio.ts
+  severity: error
+- id: SI-012
+  category: entry_point
+  description: Calendar sync internal worker must exist
+  file: src/routes/internal/calendar-sync.ts
+  check: file_exists
+  expected: src/routes/internal/calendar-sync.ts
+  severity: error
+- id: SI-020
+  category: dependency
+  description: Fastify must be a project dependency
+  file: package.json
+  check: package_has_dep
+  expected: fastify
+  severity: error
+- id: SI-021
+  category: dependency
+  description: Firebase Admin SDK must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: firebase-admin
+  severity: error
+- id: SI-022
+  category: dependency
+  description: Google Cloud Storage SDK must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@google-cloud/storage'
+  severity: error
+- id: SI-023
+  category: dependency
+  description: Google Cloud Pub/Sub SDK must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@google-cloud/pubsub'
+  severity: error
+- id: SI-024
+  category: dependency
+  description: Anthropic SDK must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@anthropic-ai/sdk'
+  severity: error
+- id: SI-025
+  category: dependency
+  description: Deepgram SDK must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@deepgram/sdk'
+  severity: error
+- id: SI-026
+  category: dependency
+  description: Fastify rate limit plugin must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@fastify/rate-limit'
+  severity: error
+- id: SI-027
+  category: dependency
+  description: Fastify WebSocket plugin must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@fastify/websocket'
+  severity: error
+- id: SI-028
+  category: dependency
+  description: Fastify multipart plugin must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: '@fastify/multipart'
+  severity: error
+- id: SI-029
+  category: dependency
+  description: Zod validation library must be a dependency
+  file: package.json
+  check: package_has_dep
+  expected: zod
+  severity: error
+- id: SI-030
+  category: dependency
+  description: Pino logger must be a dependency (Fastify default)
+  file: package.json
+  check: package_has_dep
+  expected: pino
+  severity: warning
+- id: SI-041
+  category: entry_point
+  description: Dockerfile must exist for containerized deployment
+  file: Dockerfile
+  check: file_exists
+  expected: Dockerfile
+  severity: error
+- id: SI-042
+  category: entry_point
+  description: Docker compose must exist for local development
+  file: docker-compose.yml
+  check: file_exists
+  expected: docker-compose.yml
+  severity: warning
+- id: SI-043
+  category: config
+  description: TypeScript config must exist
+  file: tsconfig.json
+  check: file_exists
+  expected: tsconfig.json
+  severity: error
+- id: SI-044
+  category: dependency
+  description: zod-to-json-schema must be a dependency for Fastify schema conversion
+  file: package.json
+  check: package_has_dep
+  expected: zod-to-json-schema
+  severity: error
+- id: SI-045
+  category: dependency
+  description: Google GenAI SDK must be a dependency for embeddings
+  file: package.json
+  check: package_has_dep
+  expected: '@google/genai'
+  severity: error
+- id: SI-047
+  category: config
+  description: Server must read PORT from environment variable
+  file: src/app.ts
+  check: file_contains
+  expected: PORT
+  severity: error

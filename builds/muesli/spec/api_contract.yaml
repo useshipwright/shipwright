@@ -1,0 +1,624 @@
+# API Contract
+# Authentication: Firebase Auth JWT verification on all /api/* routes via onRequest hook. Token extracted from Authorization: Bearer <token> header. Verified using Firebase Admin SDK verifyIdToken() (public key cached ~6hrs). userId (from JWT sub claim) and email attached to request, used to scope all Firestore queries.
+Internal routes (/internal/*) authenticated via Pub/Sub/Cloud Scheduler OIDC tokens verified against expected service account email.
+Share route /api/share/:shareId has variable auth: public shares need no auth, authenticated shares need any valid JWT, specific_emails shares need JWT with matching email.
+Standard response envelope: { data: T, meta?: { cursor, hasMore, warning } }. Error envelope: { error: { code: number, message: string, details?: object } }.
+
+
+openapi: 3.0.0
+info:
+  title: 'PRD -- Muesli: Open-Source Meeting Intelligence API v1'
+  version: 0.1.0
+servers:
+- url: /api
+paths:
+  /health:
+    get:
+      summary: Unauthenticated health check
+      responses:
+        '200':
+          description: Service healthy
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /health/ready:
+    get:
+      summary: "Readiness probe \u2014 checks Firestore and GCS connectivity"
+      responses:
+        '200':
+          description: '{ status: ''ok'' | ''degraded'', checks: { firestore: boolean,
+            gcs: boolean } }'
+        '503':
+          description: One or more dependencies unavailable
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings:
+    post:
+      summary: Create a new meeting (manual or from calendar event)
+      responses:
+        '200':
+          description: '{ data: Meeting }'
+        '201':
+          description: Meeting created
+        '400':
+          description: Invalid input (Zod validation)
+        '401':
+          description: Missing or invalid JWT
+      requestBody:
+        description: '{ title: string, calendarEventId?: string, attendees?: Array<{
+          name: string, email?: string }>, tags?: string[] }'
+        required: true
+        content:
+          application/json: {}
+    get:
+      summary: List meetings with pagination and filters
+      responses:
+        '200':
+          description: Success
+        '400':
+          description: Invalid query parameters
+      requestBody:
+        description: 'Query: cursor?, limit? (default 20, max 100), dateFrom?, dateTo?,
+          attendee?, tag?, status?, isStarred?, sortBy? (createdAt|title), sortOrder?
+          (asc|desc)'
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id:
+    get:
+      summary: Get meeting detail with latest notes summary
+      responses:
+        '200':
+          description: '{ data: Meeting & { latestNotes?: MeetingNote } }'
+        '404':
+          description: Meeting not found or not owned by user
+      requestBody:
+        description: 'Params: id (string)'
+        required: true
+        content:
+          application/json: {}
+    put:
+      summary: Update meeting title, tags, attendees, star/unstar
+      responses:
+        '200':
+          description: Updated
+        '404':
+          description: Not found
+      requestBody:
+        description: '{ title?: string, tags?: string[], attendees?: Array<{ name,
+          email? }>, isStarred?: boolean }'
+        required: true
+        content:
+          application/json: {}
+    delete:
+      summary: Delete meeting, all subcollections, and audio from GCS
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Not found
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/audio:
+    post:
+      summary: Upload audio file (multipart). Stores to GCS, publishes to Pub/Sub,
+        returns 202.
+      responses:
+        '200':
+          description: '{ data: { meetingId: string, status: ''processing'' } }'
+        '202':
+          description: Accepted for processing
+        '400':
+          description: Unsupported audio format
+        '413':
+          description: File exceeds 500MB limit
+        '404':
+          description: Meeting not found
+      requestBody:
+        description: 'Multipart form: file (webm|wav|mp3|ogg|m4a|flac), max 500MB'
+        required: true
+        content:
+          application/json: {}
+    get:
+      summary: Get signed GCS URL for audio playback
+      responses:
+        '200':
+          description: Signed URL returned
+        '404':
+          description: No audio for this meeting
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/transcript:
+    get:
+      summary: Full transcript ordered by time
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: 'Query: cursor?, limit? (default 500)'
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/speakers:
+    get:
+      summary: Speaker list with resolved names
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/speakers/:speakerId:
+    put:
+      summary: Rename or resolve a speaker
+      responses:
+        '200':
+          description: Updated
+      requestBody:
+        description: '{ resolvedName?: string, resolvedEmail?: string }'
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/user-notes:
+    post:
+      summary: Submit user-typed note during meeting
+      responses:
+        '200':
+          description: '{ data: TranscriptSegment }'
+        '201':
+          description: Note stored
+      requestBody:
+        description: '{ text: string, timestamp?: number (seconds from meeting start)
+          }'
+        required: true
+        content:
+          application/json: {}
+    get:
+      summary: Get all user notes for a meeting
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/notes/generate:
+    post:
+      summary: Generate or regenerate structured notes from transcript + user notes
+        + template
+      responses:
+        '200':
+          description: Notes generated
+        '404':
+          description: Meeting not found or no transcript available
+        '503':
+          description: Claude API unavailable after retries
+      requestBody:
+        description: '{ templateId?: string, model?: ''sonnet'' | ''opus'' }'
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/notes:
+    get:
+      summary: List all note versions
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/notes/latest:
+    get:
+      summary: Get latest note version
+      responses:
+        '200':
+          description: Success
+        '404':
+          description: No notes generated yet
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/notes/:version:
+    get:
+      summary: Get specific note version
+      responses:
+        '200':
+          description: '{ data: MeetingNote }'
+        '404':
+          description: Version not found
+      requestBody:
+        description: 'Params: version (number)'
+        required: true
+        content:
+          application/json: {}
+    put:
+      summary: Edit notes (sets isEdited flag)
+      responses:
+        '200':
+          description: Updated
+      requestBody:
+        description: '{ sections: Array<{ heading: string, content: string }> }'
+        required: true
+        content:
+          application/json: {}
+  /api/templates:
+    get:
+      summary: List all templates (system + user custom)
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+    post:
+      summary: Create custom template
+      responses:
+        '200':
+          description: '{ data: Template }'
+        '201':
+          description: Created
+      requestBody:
+        description: '{ name: string, sections: Array<{ heading: string, prompt: string
+          }> }'
+        required: true
+        content:
+          application/json: {}
+  /api/templates/:id:
+    get:
+      summary: Get template detail
+      responses:
+        '200':
+          description: '{ data: Template }'
+        '404':
+          description: Not found
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+    put:
+      summary: Update custom template
+      responses:
+        '200':
+          description: Updated
+        '403':
+          description: Cannot modify system template
+      requestBody:
+        description: '{ name?: string, sections?: Array<{ heading: string, prompt:
+          string }> }'
+        required: true
+        content:
+          application/json: {}
+    delete:
+      summary: Delete custom template
+      responses:
+        '200':
+          description: Deleted
+        '403':
+          description: Cannot delete system template
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/search:
+    get:
+      summary: Full-text search across meetings, notes, actions
+      responses:
+        '200':
+          description: Success
+        '400':
+          description: Missing q parameter
+      requestBody:
+        description: 'Query: q (required), type? (meetings|notes|actions|all, default
+          all), dateFrom?, dateTo?, attendee?, tag?, status?, isStarred?, cursor?,
+          limit? (default 20)'
+        required: true
+        content:
+          application/json: {}
+  /api/search/semantic:
+    get:
+      summary: Semantic similarity search via embeddings
+      responses:
+        '200':
+          description: Success
+        '503':
+          description: Embedding service unavailable
+      requestBody:
+        description: 'Query: q (required), same filters as /api/search, cursor?, limit?
+          (default 10)'
+        required: true
+        content:
+          application/json: {}
+  /api/ai/ask:
+    post:
+      summary: Cross-meeting Q&A via RAG
+      responses:
+        '200':
+          description: Success
+        '429':
+          description: AI rate limit exceeded (10/min)
+        '503':
+          description: Claude API unavailable
+      requestBody:
+        description: '{ question: string, filters?: { dateRange?: { from: string,
+          to: string }, attendees?: string[], tags?: string[], meetingIds?: string[]
+          } }'
+        required: true
+        content:
+          application/json: {}
+  /api/ai/meeting-prep:
+    post:
+      summary: Generate meeting prep brief from past meetings with overlapping attendees
+      responses:
+        '200':
+          description: Success
+        '400':
+          description: Must provide calendarEventId or attendees
+      requestBody:
+        description: '{ calendarEventId?: string, attendees?: string[] }'
+        required: true
+        content:
+          application/json: {}
+  /api/actions:
+    get:
+      summary: List action items with filters
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: 'Query: status?, assignee?, meetingId?, dueBefore?, dueAfter?,
+          cursor?, limit?'
+        required: true
+        content:
+          application/json: {}
+    post:
+      summary: Create manual action item
+      responses:
+        '200':
+          description: '{ data: ActionItem }'
+        '201':
+          description: Created
+      requestBody:
+        description: '{ title: string, meetingId?: string, assignee?: string, dueDate?:
+          string (ISO 8601) }'
+        required: true
+        content:
+          application/json: {}
+  /api/actions/summary:
+    get:
+      summary: Action items dashboard summary
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/actions:
+    get:
+      summary: Actions for a specific meeting
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/actions/:id:
+    put:
+      summary: Update action item
+      responses:
+        '200':
+          description: Updated
+      requestBody:
+        description: '{ title?: string, assignee?: string, dueDate?: string, status?:
+          ''open''|''in_progress''|''completed''|''cancelled'' }'
+        required: true
+        content:
+          application/json: {}
+    delete:
+      summary: Delete action item
+      responses:
+        '200':
+          description: Deleted
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/calendar/connect:
+    post:
+      summary: Initiate Google Calendar OAuth2 flow
+      responses:
+        '200':
+          description: Auth URL generated
+      requestBody:
+        description: '{ redirectUri?: string }'
+        required: true
+        content:
+          application/json: {}
+  /api/calendar/callback:
+    get:
+      summary: "OAuth2 callback \u2014 exchanges code for tokens, stores in user profile"
+      responses:
+        '200':
+          description: Calendar connected
+        '400':
+          description: Invalid or expired OAuth code
+      requestBody:
+        description: 'Query: code, state'
+        required: true
+        content:
+          application/json: {}
+  /api/calendar/events:
+    get:
+      summary: List calendar events
+      responses:
+        '200':
+          description: Success
+        '400':
+          description: Calendar not connected
+      requestBody:
+        description: 'Query: dateFrom (required), dateTo (required)'
+        required: true
+        content:
+          application/json: {}
+  /api/calendar/sync:
+    post:
+      summary: Trigger incremental calendar sync
+      responses:
+        '200':
+          description: Sync complete
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/calendar/disconnect:
+    delete:
+      summary: Revoke Google Calendar access
+      responses:
+        '200':
+          description: Disconnected
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/share:
+    post:
+      summary: Create a shareable link
+      responses:
+        '200':
+          description: '{ data: Share & { url: string } }'
+        '201':
+          description: Share created
+      requestBody:
+        description: '{ access: ''public''|''authenticated''|''specific_emails'',
+          allowedEmails?: string[], includeTranscript?: boolean, includeAudio?: boolean,
+          expiresAt?: string }'
+        required: true
+        content:
+          application/json: {}
+  /api/share/:shareId:
+    get:
+      summary: View shared meeting notes (public endpoint for public shares)
+      responses:
+        '200':
+          description: Success
+        '401':
+          description: Authentication required for this share
+        '403':
+          description: Email not in allowed list
+        '404':
+          description: Share not found or expired
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+    delete:
+      summary: Revoke a share
+      responses:
+        '200':
+          description: Revoked
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/meetings/:id/shares:
+    get:
+      summary: List shares for a meeting
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /api/me:
+    get:
+      summary: Get current user profile and preferences
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+    put:
+      summary: Update preferences
+      responses:
+        '200':
+          description: Updated
+      requestBody:
+        description: '{ defaultTemplateId?: string, transcriptionBackend?: string,
+          autoTranscribe?: boolean, timezone?: string, language?: string }'
+        required: true
+        content:
+          application/json: {}
+    delete:
+      summary: Delete account and all data (GDPR)
+      responses:
+        '200':
+          description: Account and all data deleted
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
+  /internal/process-audio:
+    post:
+      summary: Pub/Sub push handler for async audio transcription
+      responses:
+        '200':
+          description: 204 No Content on success
+        '204':
+          description: Processed and acknowledged
+        '500':
+          description: Processing failed (Pub/Sub will retry)
+      requestBody:
+        description: 'Pub/Sub push envelope: { message: { data: base64, messageId
+          }, subscription }'
+        required: true
+        content:
+          application/json: {}
+  /internal/calendar-sync:
+    post:
+      summary: Cloud Scheduler trigger for periodic calendar sync
+      responses:
+        '200':
+          description: 204 No Content
+        '204':
+          description: Sync complete
+      requestBody:
+        description: none
+        required: true
+        content:
+          application/json: {}
